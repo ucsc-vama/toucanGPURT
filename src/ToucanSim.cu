@@ -31,17 +31,31 @@ int ToucanSimulator::selectDefaultGPU() {
 
   numSMs = prop.multiProcessorCount;
   maxThreadsPerBlock = prop.maxThreadsPerBlock;
+  maxBlocksPerSMForSingleCycleKernel = 0;
 
-  gpuErrchk(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-    &maxBlocksPerSMForSingleCycleKernel, 
-    evalSingleCycle, 
-    maxThreadsPerBlock, 
-    0));
+  // Find a max thread number that supports cooperative group
+  while (maxThreadsPerBlock > 2 && (maxBlocksPerSMForSingleCycleKernel == 0)) {
+    maxThreadsPerBlock = maxThreadsPerBlock >> 1;
+    gpuErrchk(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &maxBlocksPerSMForSingleCycleKernel, 
+        evalSingleCycle, 
+        maxThreadsPerBlock, 
+        0));
+  }
+
+  if (maxBlocksPerSMForSingleCycleKernel == 0) {
+    std::cerr << "Cannot find a proper thread block size to enable cooperative kernel. exit.\n";
+    return 1;
+  }
+
+  
   gpuErrchk(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
     &maxBlocksPerSMForMultiCycleKernel, 
     evalFreeRunningNCycles, 
     maxThreadsPerBlock, 
     0));
+    
+  assert(maxBlocksPerSMForMultiCycleKernel != 0);
 
   // Print device information
   std::cout << "Device Name: " << prop.name << std::endl;
@@ -183,4 +197,5 @@ uint64_t ToucanSimulator::readSignal(const std::string &signalName) {
 
   // return ToucanSimulator::getSmallSignalValue(signalLocs);
 }
+
 

@@ -2,7 +2,7 @@
 
 #include "ToucanGPUGenDataTypes.h"
 
-#include <cuda.h>
+// #include <cuda.h>
 #include <cuda_runtime_api.h>
 #include <cuda_runtime.h>
 #include <cooperative_groups.h>
@@ -12,7 +12,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 {
    if (code != cudaSuccess) 
    {
-      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      fprintf(stderr,"GPUassert: %s, file: %s, line: %d\n", cudaGetErrorString(code), file, line);
       if (abort) exit(code);
    }
 }
@@ -23,7 +23,7 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt);
 
 uint64_t read_reg_from_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalLocs);
 
-uint64_t write_reg_to_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalLocs, uint64_t signalValue);
+void write_reg_to_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalLocs, uint64_t signalValue);
 
 void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design);
 

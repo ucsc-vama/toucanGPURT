@@ -54,7 +54,7 @@ namespace cg = cooperative_groups;
 
 
 
-#define LUT_SIZE 1536
+#define LUT_SIZE 5154
 
 typedef struct {
   // Private data
@@ -81,8 +81,10 @@ __device__ uint32_t realCycles;
 __device__ char **printMsgs;
 __device__ SimPartitionPtrs *partitions;
 __device__ uint32_t **partsInRegion;
-__device__ size_t *numPartsInRegion;
+__device__ uint32_t *numPartsInRegion;
 __device__ uint32_t numRegions;
+
+uint8_t *regPool_device, *memPool_device, *exchangePool_device;
 
 std::vector<SimPartitionPtrs> gpuPartInfos;
 
@@ -329,7 +331,8 @@ __device__ void evalEachRegion(
 ) {
   size_t block_rank = blockIdx.x;
   size_t blocks_in_grid = blockDim.x;
-  assert(blockDim.y == 0);
+  assert(blockDim.y == 1);
+
 
   for (size_t exec_pos = 0; exec_pos < numPartsInCurrentRegion; exec_pos += blocks_in_grid) {
     size_t block_pos = exec_pos + block_rank;
@@ -337,6 +340,8 @@ __device__ void evalEachRegion(
       auto partId = partIdsInCurrentRegion[block_pos];
       evalEachPartition(partId);
     }
+
+    return;
   }
 }
 
@@ -346,7 +351,8 @@ __global__ void evalSingleCycle() {
 
   for (size_t regionId = 0; regionId < numRegions; regionId++) {
     uint32_t * partIdsInCurrentRegion = partsInRegion[regionId];
-    size_t numPartsInCurrentRegion = numPartsInRegion[regionId];
+    uint32_t numPartsInCurrentRegion = numPartsInRegion[regionId];
+    assert(numPartsInCurrentRegion != 0);
     evalEachRegion(partIdsInCurrentRegion, numPartsInCurrentRegion);
     grid.sync();
   }
@@ -358,7 +364,7 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
   for (size_t cycle = 0; cycle < cycleCnt; cycle++) {
     for (size_t regionId = 0; regionId < numRegions; regionId++) {
       uint32_t * partIdsInCurrentRegion = partsInRegion[regionId];
-      size_t numPartsInCurrentRegion = numPartsInRegion[regionId];
+      uint32_t numPartsInCurrentRegion = numPartsInRegion[regionId];
       evalEachRegion(partIdsInCurrentRegion, numPartsInCurrentRegion);
       grid.sync();
     }
@@ -386,7 +392,7 @@ uint64_t read_reg_from_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& si
     auto pos = std::get<0>(*it);
     // TODO: Use async copy to speedup
     uint8_t valFragment;
-    gpuErrchk(cudaMemcpy(&valFragment, regPool + pos, 1, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(&valFragment, regPool_device + pos, 1, cudaMemcpyDeviceToHost));
     assert(valFragment <= 0xF);
     result = (result << 4) | valFragment;
   }
@@ -394,11 +400,11 @@ uint64_t read_reg_from_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& si
 }
 
 
-uint64_t write_reg_to_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalLocs, uint64_t signalValue) {
+void write_reg_to_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalLocs, uint64_t signalValue) {
   for(auto rit = signalLocs.rbegin(); rit != signalLocs.rend(); ++rit) {
     auto pos = std::get<0>(*rit);
     uint8_t valFragment = signalValue & 0xF;
-    gpuErrchk(cudaMemcpyAsync(regPool + pos, &valFragment, 1, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpyAsync(regPool_device + pos, &valFragment, 1, cudaMemcpyHostToDevice));
     signalValue = signalValue >> 4;
   }
   gpuErrchk(cudaDeviceSynchronize());
@@ -431,7 +437,6 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
   assert(design.memPool.size() == design.memPoolSize && "Mem pool should be initialized!");
   assert(design.exchangePool.size() == design.exchangePoolSize && "Exchange pool should be initialized!");
 
-  uint8_t *regPool_device, *memPool_device, *exchangePool_device;
   cudaMalloc(&(regPool_device), design.regPoolSize);
   cudaMalloc(&(memPool_device), design.memPoolSize);
   cudaMalloc(&(exchangePool_device), design.exchangePoolSize);
@@ -532,6 +537,7 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
   uint32_t *numPartsInRegion_device;
   cudaMalloc(&numPartsInRegion_device, numRegions_host * sizeof(uint32_t*));
   cudaMemcpy(numPartsInRegion_device, numParts.data(), numRegions_host * sizeof(uint32_t*), cudaMemcpyHostToDevice);
+  cudaMemcpyToSymbol(numPartsInRegion, &numPartsInRegion_device, sizeof(uint32_t*));
   cudaMemcpyToSymbol(numRegions, &numRegions_host, sizeof(uint32_t));
 
   uint32_t **partsInRegion_device_ptrs;

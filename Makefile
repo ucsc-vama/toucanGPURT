@@ -6,7 +6,7 @@ NVCC = nvcc
 # Compiler Flags
 # -DNDEBUG to disable asserts
 # -rdc=true
-NVCCFLAGS = -arch=sm_60 -Iinclude -O3 -std=c++20 
+NVCCFLAGS = -arch=sm_60 -Iinclude -O3 -std=c++20 -lineinfo
 # CXXFLAGS = -Wall -Wextra -Iinclude -O3 -std=c++20
 
 # Source and Include directories
