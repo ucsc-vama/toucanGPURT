@@ -31,6 +31,7 @@ namespace toucanGPUSim {
       cleanup();
     }
 
+    uint64_t cycle_cnt;
 
     private:
     int maxBlocksPerSMForSingleCycleKernel;
@@ -39,7 +40,6 @@ namespace toucanGPUSim {
     int numSMs;
 
     bool dumpVCD;
-    uint64_t cycle_cnt;
     std::ofstream *vcdOfs;
     // ((part, valId, width), (part, valId, width), ..)
     std::vector<std::vector<std::tuple<uint32_t, uint32_t, uint32_t>>> vcdSignalInfo;
