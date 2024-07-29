@@ -38,6 +38,7 @@ namespace toucanGPUSim {
     int maxBlocksPerSMForMultiCycleKernel;
     int maxThreadsPerBlock;
     int numSMs;
+    size_t maxNumPartsInEachRegion;
 
     bool dumpVCD;
     std::ofstream *vcdOfs;

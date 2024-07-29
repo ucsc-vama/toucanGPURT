@@ -2,6 +2,7 @@
 #include "SimEval.h"
 #include <iostream>
 #include <cassert>
+#include <algorithm>
 
 #include <cuda.h>
 #include <cuda_runtime_api.h>
@@ -112,6 +113,10 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
 
   setEnablePrint(enablePrint);
 
+  for (const auto &eachRegionParts: design.regionPartitionIds) {
+    maxNumPartsInEachRegion = std::max(maxNumPartsInEachRegion, eachRegionParts.size());
+  }
+
   return 0;
 }
 
@@ -121,7 +126,8 @@ bool ToucanSimulator::eval() {
     // dumpVcdWorker(cycle_cnt);
   }
 
-  size_t numBlocks = maxBlocksPerSMForSingleCycleKernel * numSMs;
+  size_t maxBlocks = maxBlocksPerSMForSingleCycleKernel * numSMs;
+  size_t numBlocks = std::min(maxNumPartsInEachRegion, maxBlocks);
   size_t threadsPerBlock = maxThreadsPerBlock;
 
   void *kernelArgs[] = {nullptr};
@@ -146,7 +152,9 @@ bool ToucanSimulator::eval_free_running(uint32_t max_cycles) {
     // dumpVcdWorker(cycle_cnt);
   }
 
-  size_t numBlocks = maxBlocksPerSMForMultiCycleKernel * numSMs;
+  size_t maxBlocks = maxBlocksPerSMForMultiCycleKernel * numSMs;
+  size_t numBlocks = std::min(maxNumPartsInEachRegion, maxBlocks);
+
   size_t threadsPerBlock = maxThreadsPerBlock;
   void *kernelArgs[] = {&max_cycles};
 
