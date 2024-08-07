@@ -91,8 +91,8 @@ std::vector<SimPartitionPtrs> gpuPartInfos;
 // every thread group
 __device__ void evalPartL0(
   uint8_t * __restrict valuePool, 
-  CGTopLevelMetaInfo * __restrict topLevelOps, 
-  size_t numOps) {
+  const CGTopLevelMetaInfo * __restrict topLevelOps, 
+  const size_t numOps) {
 
   auto block = cg::this_thread_block();
   auto thread_rank = block.thread_rank();
@@ -134,8 +134,8 @@ __device__ void evalPartL0(
 __device__ void evalExecLevels(
   uint8_t * __restrict valuePool, 
   // uint8_t * __restrict exchangePool, 
-  CGExecLevelMetaInfo * __restrict execLevelOps, 
-  size_t numOps) {
+  const CGExecLevelMetaInfo * __restrict execLevelOps, 
+  const size_t numOps) {
 
   auto block = cg::this_thread_block();
   auto thread_rank = block.thread_rank();
@@ -228,8 +228,8 @@ __device__ void evalExecLevels(
 
 __device__ void evalLastLevel(
   uint8_t * __restrict valuePool, 
-  CGLastLevelMetaInfo * __restrict lastLevelOps, 
-  size_t numOps) {
+  const CGLastLevelMetaInfo * __restrict lastLevelOps, 
+  const size_t numOps) {
 
   auto block = cg::this_thread_block();
   auto thread_rank = block.thread_rank();
@@ -354,6 +354,7 @@ __global__ void evalSingleCycle() {
     uint32_t numPartsInCurrentRegion = numPartsInRegion[regionId];
     assert(numPartsInCurrentRegion != 0);
     evalEachRegion(partIdsInCurrentRegion, numPartsInCurrentRegion);
+    __threadfence();
     grid.sync();
   }
 }
@@ -366,6 +367,7 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
       uint32_t * partIdsInCurrentRegion = partsInRegion[regionId];
       uint32_t numPartsInCurrentRegion = numPartsInRegion[regionId];
       evalEachRegion(partIdsInCurrentRegion, numPartsInCurrentRegion);
+      __threadfence();
       grid.sync();
     }
     grid.sync();
