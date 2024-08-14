@@ -72,9 +72,9 @@ typedef struct {
   size_t *numOpsExecMemRead;
   size_t *numOpsExecVecRead;
   size_t *numOpsExecLUT;
-  toucanGPUSim::CGMemReadMetaInfo *ops_exec_memRead;
-  toucanGPUSim::CGVecReadMetaInfo *ops_exec_vecRead;
-  toucanGPUSim::CGLUTMetaInfo *ops_exec_lut;
+  toucanGPUSim::CGMemReadMetaInfo **ops_exec_memRead;
+  toucanGPUSim::CGVecReadMetaInfo **ops_exec_vecRead;
+  toucanGPUSim::CGLUTMetaInfo **ops_exec_lut;
 
   // Last level
   size_t numOpsLastExgWrite;
@@ -135,8 +135,8 @@ __device__ void evalPartL0(
   // Eval exchange reads
   for (size_t op_pos = thread_rank; op_pos < numExgReads; op_pos += threads_in_block) {
     const auto &op = topLevelExgReadOps[op_pos];
-    auto exgValId = op.exgRead.exchangeVal;
-    auto localValId = op.exgRead.localVal;
+    auto exgValId = op.exchangeVal;
+    auto localValId = op.localVal;
     auto exgVal = exchangePool[exgValId];
     valuePool[localValId] = exgVal;
   }
@@ -304,7 +304,7 @@ __device__ void evalLastLevel(
 __device__ void evalEachPartition(size_t partId) {
   auto &partPtrs = partitions[partId];
 
-  evalPartL0(partPtrs.valuePool, partPtrs.ops_l0_regRead, partPtrs.ops_l0_exgRead, partPtrs.numRegReads, partPtrs.numExgReads);
+  evalPartL0(partPtrs.valuePool, partPtrs.ops_l0_regRead, partPtrs.ops_l0_exgRead, partPtrs.numOpsL0RegRead, partPtrs.numOpsL0ExgRead);
   __syncthreads();
 
   for (size_t exec_level_id = 0; exec_level_id < partPtrs.numExecLevels; exec_level_id++) {
@@ -326,12 +326,12 @@ __device__ void evalEachPartition(size_t partId) {
     partPtrs.ops_last_memWrite, 
     partPtrs.ops_last_print, 
     partPtrs.ops_last_stop, 
-    partPtrs.numExgWriteOps, 
-    partPtrs.numRegWriteOps, 
-    partPtrs.numMemWriteOps, 
-    partPtrs.numPrintOps, 
-    partPtrs.numStopOps);
-  evalLastLevel(partPtrs.valuePool, partPtrs.ops_last, partPtrs.numOpsLast);
+    partPtrs.numOpsLastExgWrite, 
+    partPtrs.numOpsLastRegWrite, 
+    partPtrs.numOpsLastMemWrite, 
+    partPtrs.numOpsLastPrint, 
+    partPtrs.numOpsLastStop);
+
 }
 
 
@@ -437,7 +437,8 @@ void setEnablePrint(bool print_en) {
   cudaMemcpyToSymbol(enablePrint, &print_en, 1);
 }
 
-static allocAndCopyVector(void **devicePtr, const void *data, const size_t size) {
+template <typename T>
+static void allocAndCopyVector(T **devicePtr, const void *data, const size_t size) {
   cudaMalloc(devicePtr, size);
   cudaMemcpy(*devicePtr, data, size, cudaMemcpyHostToDevice);
 }
