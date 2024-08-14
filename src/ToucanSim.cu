@@ -1,5 +1,6 @@
 #include "ToucanGPUSim.h"
 #include "SimEval.h"
+#include <cstdint>
 #include <iostream>
 #include <cassert>
 #include <algorithm>
@@ -109,11 +110,8 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
   auto ret = selectDefaultGPU();
   assert(ret == 0);
 
-  copy_netlist_to_gpu(design);
-
-  setEnablePrint(enablePrint);
-
   // Get thread block count
+  maxNumPartsInEachRegion = 0;
   for (const auto &eachRegionParts: design.regionPartitionIds) {
     maxNumPartsInEachRegion = std::max(maxNumPartsInEachRegion, eachRegionParts.size());
   }
@@ -122,7 +120,41 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
   std::cout << "Single cycle kernel use " << numBlocksForSingleCycleKernel << " thread blocks.\n";
   std::cout << "Multi cycle kernel use " << numBlocksForMultiCycleKernel << " thread blocks." << std::endl;
 
+  // Get max value pool size
+  maxValuePoolSize = 0;
+  for (const auto &eachRegionParts: design.regionPartitionIds) {
+    maxValuePoolSize = std::max(maxValuePoolSize, eachRegionParts.valuePoolSize);
+  }
+  assert(maxValuePoolSize <= UINT16_MAX);
 
+  // setup shared mem
+  cudaFuncSetCacheConfig(evalSingleCycle, cudaFuncCachePreferShared);
+  cudaFuncSetCacheConfig(evalFreeRunningNCycles, cudaFuncCachePreferShared);
+  cudaDeviceGetAttribute(&maxSharedMemoryPerBlock, cudaDevAttrMaxSharedMemoryPerBlock, 0);
+
+  size_t requiredSharedMem = maxValuePoolSize + (2 * (MinBufferSize + GPUMemPaddingSize));
+  if (maxSharedMemoryPerBlock < requiredSharedMem) {
+    std::cerr << "Error: This simulator requires at lease " << requiredSharedMem << "B shared memory, while GPU supports only " << maxSharedMemoryPerBlock << "B\n";
+    return -1;
+  }
+
+  sharedMemPerBlock = maxSharedMemoryPerBlock;
+
+  // Align buffer size to KB boundary
+  netlistBufferSize = (((maxSharedMemoryPerBlock - maxValuePoolSize) / 2) - GPUMemPaddingSize) & (0xFFFFFFFF << 10);
+
+  assert(netlistBufferSize > 0);
+  std::cout << "Buufer size " << (netlistBufferSize >> 10) << "KB (x2)" << std::endl;
+
+
+  // Temp:
+  netlistBufferSize = 0;
+  std::cout << "For now, don't use netlistBuffer" << std::endl;
+  sharedMemPerBlock = maxValuePoolSize;
+
+  copy_netlist_to_gpu(design, netlistBufferSize);
+
+  setEnablePrint(enablePrint);
 
   return 0;
 }
@@ -141,7 +173,8 @@ bool ToucanSimulator::eval() {
     (void*)evalSingleCycle,
     numBlocks,
     threadsPerBlock,
-    kernelArgs
+    kernelArgs,
+    sharedMemPerBlock
   ));
   
   gpuErrchk(cudaDeviceSynchronize());
@@ -166,7 +199,8 @@ bool ToucanSimulator::eval_free_running(uint32_t max_cycles) {
     (void*)evalFreeRunningNCycles,
     numBlocks,
     threadsPerBlock,
-    kernelArgs
+    kernelArgs,
+    sharedMemPerBlock
   ));
   
   gpuErrchk(cudaDeviceSynchronize());

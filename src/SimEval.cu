@@ -61,6 +61,7 @@ typedef struct {
   // Private data
   uint8_t *valuePool;
   size_t valuePoolSize;
+  size_t numConstsInValuePool;
 
   // Top level
   size_t numOpsL0RegRead;
@@ -105,10 +106,14 @@ __device__ SimPartitionPtrs *partitions;
 __device__ uint32_t **partsInRegion;
 __device__ uint32_t *numPartsInRegion;
 __device__ uint32_t numRegions;
+__device__ netlistBufferSize;
 
 uint8_t *regPool_device, *memPool_device, *exchangePool_device;
 
 std::vector<SimPartitionPtrs> gpuPartInfos;
+
+
+extern __shared__ uint8_t sharedMem[];
 
 // every thread group
 __device__ void evalPartL0(
@@ -304,12 +309,23 @@ __device__ void evalLastLevel(
 __device__ void evalEachPartition(size_t partId) {
   auto &partPtrs = partitions[partId];
 
-  evalPartL0(partPtrs.valuePool, partPtrs.ops_l0_regRead, partPtrs.ops_l0_exgRead, partPtrs.numOpsL0RegRead, partPtrs.numOpsL0ExgRead);
+  auto block = cg::this_thread_block();
+  auto thread_rank = block.thread_rank();
+  auto threads_in_block = block.size();
+
+  uint8_t *localValuePool = reinterpret_cast<uint8_t*>(sharedMem);
+  // TODO: consider buffer netlist
+  // load consts
+  for (size_t data_pos = thread_rank; data_pos < partPtrs.numConstsInValuePool; data_pos += threads_in_block) {
+    localValuePool[data_pos] = partPtrs.valuePool[data_pos];
+  }
+
+  evalPartL0(localValuePool, partPtrs.ops_l0_regRead, partPtrs.ops_l0_exgRead, partPtrs.numOpsL0RegRead, partPtrs.numOpsL0ExgRead);
   __syncthreads();
 
   for (size_t exec_level_id = 0; exec_level_id < partPtrs.numExecLevels; exec_level_id++) {
     evalExecLevels(
-      partPtrs.valuePool, 
+      localValuePool, 
       partPtrs.ops_exec_memRead[exec_level_id],
       partPtrs.ops_exec_vecRead[exec_level_id], 
       partPtrs.ops_exec_lut[exec_level_id], 
@@ -320,7 +336,7 @@ __device__ void evalEachPartition(size_t partId) {
   }
 
   evalLastLevel(
-    partPtrs.valuePool, 
+    localValuePool, 
     partPtrs.ops_last_exgWrite, 
     partPtrs.ops_last_regWrite, 
     partPtrs.ops_last_memWrite, 
@@ -443,10 +459,11 @@ static void allocAndCopyVector(T **devicePtr, const void *data, const size_t siz
   cudaMemcpy(*devicePtr, data, size, cudaMemcpyHostToDevice);
 }
 
-void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
+void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design, size_t netlistBufferSize_host) {
   // copy lut
   assert(design.lut.size() == LUT_SIZE);
   cudaMemcpyToSymbol(lutContent, design.lut.data(), design.lut.size() * sizeof(uint8_t));
+  cudaMemcpyToSymbol(netlistBufferSize, &netlistBufferSize_host, sizeof(size_t));
 
   // copy regs and mem
   assert(design.regPool.size() == design.regPoolSize && "Reg pool should be initialized!");
@@ -473,6 +490,7 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     allocAndCopyVector(&(partInfo.valuePool), eachPart.valuePool.data(), eachPart.valuePoolSize);
     partInfo.valuePoolSize = eachPart.valuePoolSize;
     assert(partInfo.valuePoolSize <= UINT16_MAX);
+    partInfo.numConstsInValuePool = eachPart.numConstsInValuePool;
 
     // copy operations
 

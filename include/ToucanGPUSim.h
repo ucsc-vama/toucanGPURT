@@ -4,6 +4,7 @@
 #include <fstream>
 #include <vector>
 #include "ToucanGPUGenDataTypes.h"
+#include "GPUConsts.h"
 
 namespace toucanGPUSim {
   class ToucanSimulator {
@@ -42,6 +43,14 @@ namespace toucanGPUSim {
 
     size_t numBlocksForSingleCycleKernel;
     size_t numBlocksForMultiCycleKernel;
+
+    size_t maxSharedMemoryPerBlock;
+    size_t maxValuePoolSize;
+    size_t netlistBufferSize;
+    size_t sharedMemPerBlock;
+
+    const size_t MinBufferSize = 1024;
+    const size_t MaxBufferSize = 32768;
 
     bool dumpVCD;
     std::ofstream *vcdOfs;
