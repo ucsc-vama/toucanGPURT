@@ -629,8 +629,7 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
   {
     SimPartitionPtrs *partInfosPtr;
     size_t memSize = gpuPartInfos.size() * sizeof(SimPartitionPtrs);
-    cudaMalloc(&partInfosPtr, memSize);
-    cudaMemcpy(partInfosPtr, gpuPartInfos.data(), memSize, cudaMemcpyHostToDevice);
+    allocAndCopyVector(&partInfosPtr, gpuPartInfos.data(), memSize);
     cudaMemcpyToSymbol(partitions, &partInfosPtr, sizeof(SimPartitionPtrs*));
   }
 
@@ -645,8 +644,7 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     }
     uint32_t *ptr;
     size_t memSize = eachRegionParts.size() * sizeof(uint32_t);
-    cudaMalloc(&ptr, memSize);
-    cudaMemcpy(ptr, eachRegionParts.data(), memSize, cudaMemcpyHostToDevice);
+    allocAndCopyVector(&ptr, eachRegionParts.data(), memSize);
     partsInRegion_device.push_back(ptr);
     numParts.push_back(eachRegionParts.size());
   }
@@ -655,14 +653,12 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
   assert(numRegions_host != 0);
 
   uint32_t *numPartsInRegion_device;
-  cudaMalloc(&numPartsInRegion_device, numRegions_host * sizeof(uint32_t*));
-  cudaMemcpy(numPartsInRegion_device, numParts.data(), numRegions_host * sizeof(uint32_t*), cudaMemcpyHostToDevice);
+  allocAndCopyVector(&numPartsInRegion_device, numParts.data(), numRegions_host * sizeof(uint32_t*));
   cudaMemcpyToSymbol(numPartsInRegion, &numPartsInRegion_device, sizeof(uint32_t*));
   cudaMemcpyToSymbol(numRegions, &numRegions_host, sizeof(uint32_t));
 
   uint32_t **partsInRegion_device_ptrs;
-  cudaMalloc(&partsInRegion_device_ptrs, numRegions_host * sizeof(uint32_t**));
-  cudaMemcpy(partsInRegion_device_ptrs, partsInRegion_device.data(), numRegions_host * sizeof(uint32_t**), cudaMemcpyHostToDevice);
+  allocAndCopyVector(&partsInRegion_device_ptrs, partsInRegion_device.data(), numRegions_host * sizeof(uint32_t**));
   cudaMemcpyToSymbol(partsInRegion, &partsInRegion_device_ptrs, sizeof(uint32_t**));
 
   // copy print msgs
@@ -670,15 +666,13 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
   for (auto &eachMsg: design.printMsgs) {
     char* msgPtr;
     size_t memSize = (eachMsg.size() + 1) * sizeof(char);
-    cudaMalloc(&msgPtr, memSize);
-    cudaMemcpy(msgPtr, eachMsg.c_str(), memSize, cudaMemcpyHostToDevice);
+    allocAndCopyVector(&msgPtr, eachMsg.c_str(), memSize);
     printMsgs_device_ptrs.push_back(msgPtr);
   }
   {
     size_t memSize = printMsgs_device_ptrs.size() * sizeof(char*);
     char **printMsgs_device;
-    cudaMalloc(&(printMsgs_device), memSize);
-    cudaMemcpy(printMsgs_device, printMsgs_device_ptrs.data(), memSize, cudaMemcpyHostToDevice);
+    allocAndCopyVector(&(printMsgs_device), printMsgs_device_ptrs.data(), memSize);
     cudaMemcpyToSymbol(printMsgs, &printMsgs_device, sizeof(char**));
   }
 
