@@ -113,9 +113,16 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
 
   setEnablePrint(enablePrint);
 
+  // Get thread block count
   for (const auto &eachRegionParts: design.regionPartitionIds) {
     maxNumPartsInEachRegion = std::max(maxNumPartsInEachRegion, eachRegionParts.size());
   }
+  numBlocksForSingleCycleKernel = std::min(maxNumPartsInEachRegion, maxBlocksPerSMForSingleCycleKernel * numSMs);
+  numBlocksForMultiCycleKernel = std::min(maxNumPartsInEachRegion, maxBlocksPerSMForMultiCycleKernel * numSMs);
+  std::cout << "Single cycle kernel use " << numBlocksForSingleCycleKernel << " thread blocks.\n";
+  std::cout << "Multi cycle kernel use " << numBlocksForMultiCycleKernel << " thread blocks." << std::endl;
+
+
 
   return 0;
 }
@@ -126,8 +133,7 @@ bool ToucanSimulator::eval() {
     // dumpVcdWorker(cycle_cnt);
   }
 
-  size_t maxBlocks = maxBlocksPerSMForSingleCycleKernel * numSMs;
-  size_t numBlocks = std::min(maxNumPartsInEachRegion, maxBlocks);
+  size_t numBlocks = numBlocksForSingleCycleKernel;
   size_t threadsPerBlock = maxThreadsPerBlock;
 
   void *kernelArgs[] = {nullptr};
@@ -152,9 +158,7 @@ bool ToucanSimulator::eval_free_running(uint32_t max_cycles) {
     // dumpVcdWorker(cycle_cnt);
   }
 
-  size_t maxBlocks = maxBlocksPerSMForMultiCycleKernel * numSMs;
-  size_t numBlocks = std::min(maxNumPartsInEachRegion, maxBlocks);
-
+  size_t numBlocks = numBlocksForMultiCycleKernel;
   size_t threadsPerBlock = maxThreadsPerBlock;
   void *kernelArgs[] = {&max_cycles};
 

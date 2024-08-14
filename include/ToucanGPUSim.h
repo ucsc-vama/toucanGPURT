@@ -34,11 +34,14 @@ namespace toucanGPUSim {
     uint64_t cycle_cnt;
 
     private:
-    int maxBlocksPerSMForSingleCycleKernel;
-    int maxBlocksPerSMForMultiCycleKernel;
-    int maxThreadsPerBlock;
-    int numSMs;
+    size_t maxBlocksPerSMForSingleCycleKernel;
+    size_t maxBlocksPerSMForMultiCycleKernel;
+    size_t maxThreadsPerBlock;
+    size_t numSMs;
     size_t maxNumPartsInEachRegion;
+
+    size_t numBlocksForSingleCycleKernel;
+    size_t numBlocksForMultiCycleKernel;
 
     bool dumpVCD;
     std::ofstream *vcdOfs;
