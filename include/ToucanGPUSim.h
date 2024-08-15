@@ -35,22 +35,22 @@ namespace toucanGPUSim {
     uint64_t cycle_cnt;
 
     private:
-    size_t maxBlocksPerSMForSingleCycleKernel;
-    size_t maxBlocksPerSMForMultiCycleKernel;
-    size_t maxThreadsPerBlock;
-    size_t numSMs;
-    size_t maxNumPartsInEachRegion;
+    int maxBlocksPerSMForSingleCycleKernel;
+    int maxBlocksPerSMForMultiCycleKernel;
+    int maxThreadsPerBlock;
+    int numSMs;
+    int maxNumPartsInEachRegion;
 
-    size_t numBlocksForSingleCycleKernel;
-    size_t numBlocksForMultiCycleKernel;
+    int numBlocksForSingleCycleKernel;
+    int numBlocksForMultiCycleKernel;
 
-    size_t maxSharedMemoryPerBlock;
+    int maxSharedMemoryPerBlock;
     size_t maxValuePoolSize;
     size_t netlistBufferSize;
     size_t sharedMemPerBlock;
 
-    const size_t MinBufferSize = 1024;
-    const size_t MaxBufferSize = 32768;
+    const int MinBufferSize = 1024;
+    const int MaxBufferSize = 32768;
 
     bool dumpVCD;
     std::ofstream *vcdOfs;

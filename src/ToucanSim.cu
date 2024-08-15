@@ -113,7 +113,7 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
   // Get thread block count
   maxNumPartsInEachRegion = 0;
   for (const auto &eachRegionParts: design.regionPartitionIds) {
-    maxNumPartsInEachRegion = std::max(maxNumPartsInEachRegion, eachRegionParts.size());
+    maxNumPartsInEachRegion = std::max(maxNumPartsInEachRegion, static_cast<int>(eachRegionParts.size()));
   }
   numBlocksForSingleCycleKernel = std::min(maxNumPartsInEachRegion, maxBlocksPerSMForSingleCycleKernel * numSMs);
   numBlocksForMultiCycleKernel = std::min(maxNumPartsInEachRegion, maxBlocksPerSMForMultiCycleKernel * numSMs);
@@ -122,8 +122,8 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
 
   // Get max value pool size
   maxValuePoolSize = 0;
-  for (const auto &eachRegionParts: design.regionPartitionIds) {
-    maxValuePoolSize = std::max(maxValuePoolSize, eachRegionParts.valuePoolSize);
+  for (const auto &eachPart: design.parts) {
+    maxValuePoolSize = std::max(maxValuePoolSize, static_cast<size_t>(eachPart.valuePoolSize));
   }
   assert(maxValuePoolSize <= UINT16_MAX);
 

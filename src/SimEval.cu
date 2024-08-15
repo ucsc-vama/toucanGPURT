@@ -106,7 +106,7 @@ __device__ SimPartitionPtrs *partitions;
 __device__ uint32_t **partsInRegion;
 __device__ uint32_t *numPartsInRegion;
 __device__ uint32_t numRegions;
-__device__ netlistBufferSize;
+__device__ size_t netlistBufferSize;
 
 uint8_t *regPool_device, *memPool_device, *exchangePool_device;
 
