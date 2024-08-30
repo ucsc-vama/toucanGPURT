@@ -10,9 +10,9 @@
 
 using namespace toucanGPUSim;
 
-int ToucanSimulator::selectDefaultGPU() {
+int ToucanSimulator::setupGPU(int gpu_id) {
   // Initialize CUDA
-  cudaError_t cudaStatus = cudaSetDevice(0);  // Selects the first CUDA device
+  cudaError_t cudaStatus = cudaSetDevice(gpu_id);  // Selects the first CUDA device
   if (cudaStatus != cudaSuccess) {
     std::cerr << "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?" << std::endl;
     return 1;
@@ -20,9 +20,15 @@ int ToucanSimulator::selectDefaultGPU() {
 
   // Query device properties
   cudaDeviceProp prop;
-  cudaStatus = cudaGetDeviceProperties(&prop, 0);  // Get properties of device 0
+  cudaStatus = cudaGetDeviceProperties(&prop, gpu_id);  // Get properties of device 0
   if (cudaStatus != cudaSuccess) {
     std::cerr << "cudaGetDeviceProperties failed!" << std::endl;
+    return 1;
+  }
+
+  // cuda capability >= 7.0
+  if (prop.major < 7) {
+    std::cerr << "Require CUDA capability >= 7.0\n";
     return 1;
   }
 
@@ -108,7 +114,7 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
     std::cout << "Randomize done" << std::endl;
   }
 
-  auto ret = selectDefaultGPU();
+  auto ret = setupGPU(0);
   assert(ret == 0);
 
   // Get thread block count
