@@ -40,7 +40,8 @@ int ToucanSimulator::setupGPU(int gpu_id) {
   numSMs = prop.multiProcessorCount;
   maxThreadsPerBlock = prop.maxThreadsPerBlock;
   maxBlocksPerSMForSingleCycleKernel = 0;
-  maxSharedMemoryPerSM = prop.sharedMemPerMultiprocessor;
+  // CUDA reserves 1KB shared mem.
+  maxSharedMemoryPerSM = prop.sharedMemPerMultiprocessor - 1024;
 
   // Find a max thread number that supports cooperative group
   while (maxThreadsPerBlock > 2 && (maxBlocksPerSMForSingleCycleKernel == 0)) {
@@ -163,8 +164,8 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
     if (successAllocate) break;
 
     // else, fail
-    // lower shared mem size by 10KB
-    const size_t step = 10240;
+    // lower shared mem size by 8KB
+    const size_t step = 8192;
     assert(sharedMemPerBlock > step);
     sharedMemPerBlock = sharedMemPerBlock - step;
     if (sharedMemPerBlock < requiredSharedMem) {

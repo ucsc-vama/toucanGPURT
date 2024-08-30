@@ -49,7 +49,7 @@ namespace toucanGPUSim {
     size_t netlistBufferSize;
     size_t sharedMemPerBlock;
 
-    const int MinBufferSize = 1024;
+    const int MinBufferSize = 1024 * 8;
     const int MaxBufferSize = 1024 * 100;
 
     bool dumpVCD;
