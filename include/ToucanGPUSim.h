@@ -61,7 +61,7 @@ namespace toucanGPUSim {
     std::vector<uint64_t> vcdSmallSignalCache;
     std::vector<std::vector<uint8_t>> vcdLargeSignalCache;
 
-    int selectDefaultGPU();
+    int setupGPU(int gpu_id = 0);
 
     uint64_t getSmallSignalValue(const std::vector<std::tuple<uint32_t, uint32_t, uint32_t>>& info);
 
