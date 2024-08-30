@@ -147,10 +147,6 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
   size_t preferredSharedMemPerBlock = maxValuePoolSize + (2 * (MaxBufferSize + GPUMemPaddingSize));
   preferredSharedMemPerBlock = std::min(static_cast<size_t>(maxSharedMemoryPerSM), preferredSharedMemPerBlock);
 
-  // Note: determine shared memory needed
-  // TODO: for now, simply use minimun
-  preferredSharedMemPerBlock = requiredSharedMem + 1024;
-  // sharedMemPerBlock = requiredSharedMem;
 
 
   // allocate shared mem. Close to preferredSharedMemPerBlock;
@@ -173,16 +169,15 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
     sharedMemPerBlock = sharedMemPerBlock - step;
     if (sharedMemPerBlock < requiredSharedMem) {
       // cannot allocate for basic needs
-      std::cerr << "Failed to set max dynamic shared memory size: " << cudaGetErrorString(statusKrnl1) << ", " << cudaGetErrorString(statusKrnl2) << std::endl;
+      std::cerr << "Failed to set dynamic shared memory size to " << (sharedMemPerBlock + step) << "B: " << cudaGetErrorString(statusKrnl1) << ", " << cudaGetErrorString(statusKrnl2) << std::endl;
       return -1;
     }
   }
 
 
   // Align buffer size to KB boundary
-  assert(sharedMemPerBlock > maxValuePoolSize);
-  assert((sharedMemPerBlock - maxValuePoolSize) / 2 > GPUMemPaddingSize);
-  netlistBufferSize = (((sharedMemPerBlock - maxValuePoolSize) / 2) - GPUMemPaddingSize) & (0xFFFFFFFF << 10);
+  assert(sharedMemPerBlock > (maxValuePoolSize + GPUMemPaddingSize));
+  netlistBufferSize = (((sharedMemPerBlock - maxValuePoolSize - GPUMemPaddingSize) / 2)) & (0xFFFFFFFF << 10);
   assert(netlistBufferSize > 0);
   std::cout << "Buffer size " << (netlistBufferSize >> 10) << "KB (x2)" << std::endl;
 

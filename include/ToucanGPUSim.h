@@ -50,7 +50,7 @@ namespace toucanGPUSim {
     size_t sharedMemPerBlock;
 
     const int MinBufferSize = 1024;
-    const int MaxBufferSize = 32768;
+    const int MaxBufferSize = 1024 * 100;
 
     bool dumpVCD;
     std::ofstream *vcdOfs;
