@@ -133,8 +133,8 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
   // setup shared mem
 
   size_t requiredSharedMem = maxValuePoolSize + (2 * (MinBufferSize + GPUMemPaddingSize));
-  if (sharedMemPerMultiprocessor < requiredSharedMem) {
-    std::cerr << "Error: This simulator requires at lease " << requiredSharedMem << "B shared memory, while GPU supports only " << sharedMemPerMultiprocessor << "B\n";
+  if (requiredSharedMem > maxSharedMemoryPerSM) {
+    std::cerr << "Error: This simulator requires at lease " << requiredSharedMem << "B shared memory, while GPU supports only " << maxSharedMemoryPerSM << "B\n";
     return -1;
   }
 
