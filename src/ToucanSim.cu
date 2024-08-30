@@ -34,6 +34,7 @@ int ToucanSimulator::selectDefaultGPU() {
   numSMs = prop.multiProcessorCount;
   maxThreadsPerBlock = prop.maxThreadsPerBlock;
   maxBlocksPerSMForSingleCycleKernel = 0;
+  maxSharedMemoryPerSM = prop.sharedMemPerMultiprocessor;
 
   // Find a max thread number that supports cooperative group
   while (maxThreadsPerBlock > 2 && (maxBlocksPerSMForSingleCycleKernel == 0)) {
@@ -127,30 +128,58 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
   }
   assert(maxValuePoolSize <= UINT16_MAX);
 
+
+
   // setup shared mem
-  cudaFuncSetCacheConfig(evalSingleCycle, cudaFuncCachePreferShared);
-  cudaFuncSetCacheConfig(evalFreeRunningNCycles, cudaFuncCachePreferShared);
-  cudaDeviceGetAttribute(&maxSharedMemoryPerBlock, cudaDevAttrMaxSharedMemoryPerBlock, 0);
 
   size_t requiredSharedMem = maxValuePoolSize + (2 * (MinBufferSize + GPUMemPaddingSize));
-  if (maxSharedMemoryPerBlock < requiredSharedMem) {
-    std::cerr << "Error: This simulator requires at lease " << requiredSharedMem << "B shared memory, while GPU supports only " << maxSharedMemoryPerBlock << "B\n";
+  if (sharedMemPerMultiprocessor < requiredSharedMem) {
+    std::cerr << "Error: This simulator requires at lease " << requiredSharedMem << "B shared memory, while GPU supports only " << sharedMemPerMultiprocessor << "B\n";
     return -1;
   }
 
-  sharedMemPerBlock = maxSharedMemoryPerBlock;
+  size_t preferredSharedMemPerBlock = maxValuePoolSize + (2 * (MaxBufferSize + GPUMemPaddingSize));
+  preferredSharedMemPerBlock = std::min(static_cast<size_t>(maxSharedMemoryPerSM), preferredSharedMemPerBlock);
+
+  // Note: determine shared memory needed
+  // TODO: for now, simply use minimun
+  preferredSharedMemPerBlock = requiredSharedMem + 1024;
+  // sharedMemPerBlock = requiredSharedMem;
+
+
+  // allocate shared mem. Close to preferredSharedMemPerBlock;
+  sharedMemPerBlock = preferredSharedMemPerBlock;
+  while (true) {
+
+    bool successAllocate = true;
+    cudaError_t statusKrnl1 = cudaFuncSetAttribute(evalSingleCycle, cudaFuncAttributeMaxDynamicSharedMemorySize, sharedMemPerBlock);
+
+    cudaError_t statusKrnl2 = cudaFuncSetAttribute(evalFreeRunningNCycles, cudaFuncAttributeMaxDynamicSharedMemorySize, sharedMemPerBlock);
+    
+    successAllocate = (statusKrnl1 == cudaSuccess) && (statusKrnl2 == cudaSuccess);
+
+    if (successAllocate) break;
+
+    // else, fail
+    // lower shared mem size by 10KB
+    const size_t step = 10240;
+    assert(sharedMemPerBlock > step);
+    sharedMemPerBlock = sharedMemPerBlock - step;
+    if (sharedMemPerBlock < requiredSharedMem) {
+      // cannot allocate for basic needs
+      std::cerr << "Failed to set max dynamic shared memory size: " << cudaGetErrorString(statusKrnl1) << ", " << cudaGetErrorString(statusKrnl2) << std::endl;
+      return -1;
+    }
+  }
+
 
   // Align buffer size to KB boundary
-  netlistBufferSize = (((maxSharedMemoryPerBlock - maxValuePoolSize) / 2) - GPUMemPaddingSize) & (0xFFFFFFFF << 10);
-
+  assert(sharedMemPerBlock > maxValuePoolSize);
+  assert((sharedMemPerBlock - maxValuePoolSize) / 2 > GPUMemPaddingSize);
+  netlistBufferSize = (((sharedMemPerBlock - maxValuePoolSize) / 2) - GPUMemPaddingSize) & (0xFFFFFFFF << 10);
   assert(netlistBufferSize > 0);
   std::cout << "Buufer size " << (netlistBufferSize >> 10) << "KB (x2)" << std::endl;
 
-
-  // Temp:
-  netlistBufferSize = 0;
-  std::cout << "For now, don't use netlistBuffer" << std::endl;
-  sharedMemPerBlock = maxValuePoolSize;
 
   copy_netlist_to_gpu(design, netlistBufferSize);
 

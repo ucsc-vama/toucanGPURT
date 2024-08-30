@@ -44,7 +44,7 @@ namespace toucanGPUSim {
     int numBlocksForSingleCycleKernel;
     int numBlocksForMultiCycleKernel;
 
-    int maxSharedMemoryPerBlock;
+    int maxSharedMemoryPerSM;
     size_t maxValuePoolSize;
     size_t netlistBufferSize;
     size_t sharedMemPerBlock;
