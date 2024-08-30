@@ -184,7 +184,7 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
   assert((sharedMemPerBlock - maxValuePoolSize) / 2 > GPUMemPaddingSize);
   netlistBufferSize = (((sharedMemPerBlock - maxValuePoolSize) / 2) - GPUMemPaddingSize) & (0xFFFFFFFF << 10);
   assert(netlistBufferSize > 0);
-  std::cout << "Buufer size " << (netlistBufferSize >> 10) << "KB (x2)" << std::endl;
+  std::cout << "Buffer size " << (netlistBufferSize >> 10) << "KB (x2)" << std::endl;
 
 
   copy_netlist_to_gpu(design, netlistBufferSize);
