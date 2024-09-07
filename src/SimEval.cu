@@ -412,7 +412,7 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
 }
 
 uint64_t read_reg_from_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalLocs) {
-  uint64_t result;
+  uint64_t result = 0;
 
   for(auto it = signalLocs.begin(); it != signalLocs.end(); ++it) {
     auto pos = std::get<0>(*it);
