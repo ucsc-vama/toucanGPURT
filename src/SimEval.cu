@@ -106,7 +106,6 @@ __device__ SimPartitionPtrs *partitions;
 __device__ uint32_t **partsInRegion;
 __device__ uint32_t *numPartsInRegion;
 __device__ uint32_t numRegions;
-__device__ size_t netlistBufferSize;
 
 uint8_t *regPool_device, *memPool_device, *exchangePool_device;
 
@@ -314,7 +313,6 @@ __device__ void evalEachPartition(size_t partId) {
   auto threads_in_block = block.size();
 
   uint8_t *localValuePool = reinterpret_cast<uint8_t*>(sharedMem);
-  // TODO: consider buffer netlist
   // load consts
   for (size_t data_pos = thread_rank; data_pos < partPtrs.numConstsInValuePool; data_pos += threads_in_block) {
     localValuePool[data_pos] = partPtrs.valuePool[data_pos];
@@ -459,11 +457,10 @@ static void allocAndCopyVector(T **devicePtr, const void *data, const size_t siz
   cudaMemcpy(*devicePtr, data, size, cudaMemcpyHostToDevice);
 }
 
-void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design, size_t netlistBufferSize_host) {
+void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
   // copy lut
   assert(design.lut.size() == LUT_SIZE);
   cudaMemcpyToSymbol(lutContent, design.lut.data(), design.lut.size() * sizeof(uint8_t));
-  cudaMemcpyToSymbol(netlistBufferSize, &netlistBufferSize_host, sizeof(size_t));
 
   // copy regs and mem
   assert(design.regPool.size() == design.regPoolSize && "Reg pool should be initialized!");

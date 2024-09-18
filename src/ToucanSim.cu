@@ -145,45 +145,31 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
     return -1;
   }
 
-  size_t preferredSharedMemPerBlock = maxValuePoolSize + (2 * (MaxBufferSize + GPUMemPaddingSize));
-  preferredSharedMemPerBlock = std::min(static_cast<size_t>(maxSharedMemoryPerSM), preferredSharedMemPerBlock);
 
 
 
   // allocate shared mem. Close to preferredSharedMemPerBlock;
-  sharedMemPerBlock = preferredSharedMemPerBlock;
-  while (true) {
+  sharedMemPerBlock = requiredSharedMem;
 
-    bool successAllocate = true;
-    cudaError_t statusKrnl1 = cudaFuncSetAttribute(evalSingleCycle, cudaFuncAttributeMaxDynamicSharedMemorySize, sharedMemPerBlock);
+  bool successAllocate = true;
+  cudaError_t statusKrnl1 = cudaFuncSetAttribute(evalSingleCycle, cudaFuncAttributeMaxDynamicSharedMemorySize, sharedMemPerBlock);
 
-    cudaError_t statusKrnl2 = cudaFuncSetAttribute(evalFreeRunningNCycles, cudaFuncAttributeMaxDynamicSharedMemorySize, sharedMemPerBlock);
-    
-    successAllocate = (statusKrnl1 == cudaSuccess) && (statusKrnl2 == cudaSuccess);
+  cudaError_t statusKrnl2 = cudaFuncSetAttribute(evalFreeRunningNCycles, cudaFuncAttributeMaxDynamicSharedMemorySize, sharedMemPerBlock);
+  
+  successAllocate = (statusKrnl1 == cudaSuccess) && (statusKrnl2 == cudaSuccess);
 
-    if (successAllocate) break;
 
-    // else, fail
-    // lower shared mem size by 8KB
-    const size_t step = 8192;
-    assert(sharedMemPerBlock > step);
-    sharedMemPerBlock = sharedMemPerBlock - step;
-    if (sharedMemPerBlock < requiredSharedMem) {
-      // cannot allocate for basic needs
-      std::cerr << "Failed to set dynamic shared memory size to " << (sharedMemPerBlock + step) << "B: " << cudaGetErrorString(statusKrnl1) << ", " << cudaGetErrorString(statusKrnl2) << std::endl;
-      return -1;
-    }
+  if (!successAllocate) {
+    // cannot allocate for basic needs
+    std::cerr << "Failed to set dynamic shared memory size to " << (sharedMemPerBlock + step) << "B: " << cudaGetErrorString(statusKrnl1) << ", " << cudaGetErrorString(statusKrnl2) << std::endl;
+    return -1;
   }
+  
 
 
-  // Align buffer size to KB boundary
-  assert(sharedMemPerBlock > (maxValuePoolSize + GPUMemPaddingSize));
-  netlistBufferSize = (((sharedMemPerBlock - maxValuePoolSize - GPUMemPaddingSize) / 2)) & (0xFFFFFFFF << 10);
-  assert(netlistBufferSize > 0);
-  std::cout << "Buffer size " << (netlistBufferSize >> 10) << "KB (x2)" << std::endl;
 
 
-  copy_netlist_to_gpu(design, netlistBufferSize);
+  copy_netlist_to_gpu(design);
 
   setEnablePrint(enablePrint);
 
