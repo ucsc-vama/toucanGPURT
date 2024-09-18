@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <iostream>
 #include <cassert>
+#include <vector>
 
 using namespace toucanGPUSim;
 namespace cg = cooperative_groups;
@@ -50,9 +51,15 @@ namespace cg = cooperative_groups;
 //   }
 //   return design.shouldStop;
 // }
+#define NETLIST_ALIGNMENT 16
+__host__ __device__ int getExtraAlignBytes(size_t memSize) {
+  return (NETLIST_ALIGNMENT - (memSize % NETLIST_ALIGNMENT)) % NETLIST_ALIGNMENT;
+};
 
-
-
+__device__ char* align_pointer(char* ptr) {
+  auto paddingSize = getExtraAlignBytes(reinterpret_cast<size_t>(ptr));
+  return ptr + paddingSize;
+}
 
 
 #define LUT_SIZE 5154
@@ -63,19 +70,16 @@ typedef struct {
   size_t valuePoolSize;
   size_t numConstsInValuePool;
 
+  char* netlist;
+
   // Top level
   size_t numOpsL0RegRead;
   size_t numOpsL0ExgRead;
-  toucanGPUSim::CGRegReadMetaInfo *ops_l0_regRead;
-  toucanGPUSim::CGExchangeReadMetaInfo *ops_l0_exgRead;
 
   // Exec level
   size_t *numOpsExecMemRead;
   size_t *numOpsExecVecRead;
   size_t *numOpsExecLUT;
-  toucanGPUSim::CGMemReadMetaInfo **ops_exec_memRead;
-  toucanGPUSim::CGVecReadMetaInfo **ops_exec_vecRead;
-  toucanGPUSim::CGLUTMetaInfo **ops_exec_lut;
 
   // Last level
   size_t numOpsLastExgWrite;
@@ -83,11 +87,6 @@ typedef struct {
   size_t numOpsLastMemWrite;
   size_t numOpsLastPrint;
   size_t numOpsLastStop;
-  toucanGPUSim::CGExchangeWriteMetaInfo *ops_last_exgWrite;
-  toucanGPUSim::CGRegWriteMetaInfo *ops_last_regWrite;
-  toucanGPUSim::CGMemWriteMetaInfo *ops_last_memWrite;
-  toucanGPUSim::CGPrintMetaInfo *ops_last_print;
-  toucanGPUSim::CGStopMetaInfo *ops_last_stop;
 
   uint32_t numExecLevels;
 } SimPartitionPtrs;
@@ -318,33 +317,65 @@ __device__ void evalEachPartition(size_t partId) {
     localValuePool[data_pos] = partPtrs.valuePool[data_pos];
   }
 
-  evalPartL0(localValuePool, partPtrs.ops_l0_regRead, partPtrs.ops_l0_exgRead, partPtrs.numOpsL0RegRead, partPtrs.numOpsL0ExgRead);
+  auto netlist_ptr = partPtrs.netlist;
+  // char* netlist_eval_start;
+
+  auto netlist_exgRead = align_pointer(netlist_ptr);
+  auto netlist_regRead = align_pointer(netlist_ptr + (partPtrs.numOpsL0ExgRead * sizeof(toucanGPUSim::CGExchangeReadMetaInfo)));
+
+  evalPartL0(localValuePool, 
+  reinterpret_cast<const toucanGPUSim::CGRegReadMetaInfo*>(netlist_regRead), 
+  reinterpret_cast<const toucanGPUSim::CGExchangeReadMetaInfo*>(netlist_exgRead), 
+  partPtrs.numOpsL0RegRead, partPtrs.numOpsL0ExgRead);
   __syncthreads();
 
+  auto netlist_eval_start = netlist_regRead + (partPtrs.numOpsL0RegRead * sizeof(toucanGPUSim::CGRegReadMetaInfo));
+
   for (size_t exec_level_id = 0; exec_level_id < partPtrs.numExecLevels; exec_level_id++) {
+    auto num_memRead = partPtrs.numOpsExecMemRead[exec_level_id];
+    auto num_vecRead = partPtrs.numOpsExecVecRead[exec_level_id];
+    auto num_lut = partPtrs.numOpsExecLUT[exec_level_id];
+
+    auto netlist_memRead = align_pointer(netlist_eval_start);
+    auto netlist_vecRead = align_pointer(netlist_memRead + (num_memRead * sizeof(toucanGPUSim::CGMemReadMetaInfo)));
+    auto netlist_lut = align_pointer(netlist_vecRead + (num_vecRead * sizeof(toucanGPUSim::CGVecReadMetaInfo)));
     evalExecLevels(
       localValuePool, 
-      partPtrs.ops_exec_memRead[exec_level_id],
-      partPtrs.ops_exec_vecRead[exec_level_id], 
-      partPtrs.ops_exec_lut[exec_level_id], 
-      partPtrs.numOpsExecMemRead[exec_level_id], 
-      partPtrs.numOpsExecVecRead[exec_level_id], 
-      partPtrs.numOpsExecLUT[exec_level_id]);
+      reinterpret_cast<const toucanGPUSim::CGMemReadMetaInfo*>(netlist_memRead),
+      reinterpret_cast<const toucanGPUSim::CGVecReadMetaInfo*>(netlist_vecRead), 
+      reinterpret_cast<const toucanGPUSim::CGLUTMetaInfo*>(netlist_lut), 
+      num_memRead, 
+      num_vecRead, 
+      num_lut);
+    netlist_eval_start = align_pointer(netlist_lut + (num_lut * sizeof(toucanGPUSim::CGLUTMetaInfo)));
+
     __syncthreads();
   }
 
+  auto num_exgWrite = partPtrs.numOpsLastExgWrite;
+  auto num_regWrite = partPtrs.numOpsLastRegWrite;
+  auto num_memWrite = partPtrs.numOpsLastMemWrite;
+  auto num_print = partPtrs.numOpsLastPrint;
+  auto num_stop = partPtrs.numOpsLastStop;
+
+  auto netlist_exgWrite = align_pointer(netlist_eval_start);
+  auto netlist_regWrite = align_pointer(netlist_exgWrite + (num_exgWrite * sizeof(toucanGPUSim::CGExchangeWriteMetaInfo)));
+  auto netlist_memWrite = align_pointer(netlist_regWrite + (num_regWrite * sizeof(toucanGPUSim::CGRegWriteMetaInfo)));
+  auto netlist_print = align_pointer(netlist_memWrite + (num_memWrite * sizeof(toucanGPUSim::CGMemWriteMetaInfo)));
+  auto netlist_stop = align_pointer(netlist_print + (num_print * sizeof(toucanGPUSim::CGPrintMetaInfo)));
+
   evalLastLevel(
     localValuePool, 
-    partPtrs.ops_last_exgWrite, 
-    partPtrs.ops_last_regWrite, 
-    partPtrs.ops_last_memWrite, 
-    partPtrs.ops_last_print, 
-    partPtrs.ops_last_stop, 
-    partPtrs.numOpsLastExgWrite, 
-    partPtrs.numOpsLastRegWrite, 
-    partPtrs.numOpsLastMemWrite, 
-    partPtrs.numOpsLastPrint, 
-    partPtrs.numOpsLastStop);
+    reinterpret_cast<const toucanGPUSim::CGExchangeWriteMetaInfo*>(netlist_exgWrite), 
+    reinterpret_cast<const toucanGPUSim::CGRegWriteMetaInfo*>(netlist_regWrite), 
+    reinterpret_cast<const toucanGPUSim::CGMemWriteMetaInfo*>(netlist_memWrite), 
+    reinterpret_cast<const toucanGPUSim::CGPrintMetaInfo*>(netlist_print), 
+    reinterpret_cast<const toucanGPUSim::CGStopMetaInfo*>(netlist_stop), 
+    num_exgWrite, 
+    num_regWrite, 
+    num_memWrite, 
+    num_print, 
+    num_stop);
 
 }
 
@@ -481,6 +512,15 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
   for (auto &eachPart: design.parts) {
     //
     SimPartitionPtrs partInfo;
+    std::vector<char> allNetlist;
+
+    auto appendToNetlistVec = [&](const char * dat, size_t numBytes) {
+      auto alignBytes = getExtraAlignBytes(numBytes);
+      allNetlist.insert(allNetlist.end(), dat, dat + numBytes);
+      for (size_t i = 0; i < alignBytes; i++) {
+        allNetlist.push_back(0);
+      }
+    };
 
     // copy value pool
     assert(eachPart.valuePool.size() == eachPart.valuePoolSize);
@@ -498,23 +538,16 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
 
     if (partInfo.numOpsL0ExgRead != 0) {
       size_t memSize = eachPart.ops_l0_exgRead.size() * sizeof(toucanGPUSim::CGExchangeReadMetaInfo);
-      allocAndCopyVector(&(partInfo.ops_l0_exgRead), eachPart.ops_l0_exgRead.data(), memSize);
-    } else {
-      partInfo.ops_l0_exgRead = nullptr;
+      appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_l0_exgRead.data()), memSize);
     }
 
     if (partInfo.numOpsL0RegRead != 0) {
       size_t memSize = eachPart.ops_l0_regRead.size() * sizeof(toucanGPUSim::CGRegReadMetaInfo);
-      allocAndCopyVector(&(partInfo.ops_l0_regRead), eachPart.ops_l0_regRead.data(), memSize);
-    } else {
-      partInfo.ops_l0_regRead = nullptr;
+      appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_l0_regRead.data()), memSize);
     }
 
 
     // middle level ops
-    std::vector<toucanGPUSim::CGMemReadMetaInfo*> exec_levels_memReads;
-    std::vector<toucanGPUSim::CGVecReadMetaInfo*> exec_levels_vecReads;
-    std::vector<toucanGPUSim::CGLUTMetaInfo*> exec_levels_luts;
     std::vector<size_t> exec_levels_numMemReads;
     std::vector<size_t> exec_levels_numVecReads;
     std::vector<size_t> exec_levels_numLUTs;
@@ -532,31 +565,21 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
       exec_levels_numVecReads.push_back(part_vecRead.size());
       exec_levels_numLUTs.push_back(part_lut.size());
 
-      if (part_memRead.empty()) {
-        exec_levels_memReads.push_back(nullptr);
-      } else {
-        toucanGPUSim::CGMemReadMetaInfo *op_ptr;
+      if (!part_memRead.empty()) {
         size_t memSize = part_memRead.size() * sizeof(toucanGPUSim::CGMemReadMetaInfo);
-        allocAndCopyVector(&op_ptr, part_memRead.data(), memSize);
-        exec_levels_memReads.push_back(op_ptr);
+        appendToNetlistVec(reinterpret_cast<const char*>(part_memRead.data()), memSize);
       }
 
-      if (part_vecRead.empty()) {
-        exec_levels_vecReads.push_back(nullptr);
-      } else {
+      if (!part_vecRead.empty()) {
         toucanGPUSim::CGVecReadMetaInfo *op_ptr;
         size_t memSize = part_vecRead.size() * sizeof(toucanGPUSim::CGVecReadMetaInfo);
         allocAndCopyVector(&op_ptr, part_vecRead.data(), memSize);
-        exec_levels_vecReads.push_back(op_ptr);
+        appendToNetlistVec(reinterpret_cast<const char*>(part_vecRead.data()), memSize);
       }
 
-      if (part_lut.empty()) {
-        exec_levels_luts.push_back(nullptr);
-      } else {
-        toucanGPUSim::CGLUTMetaInfo *op_ptr;
+      if (!part_lut.empty()) {
         size_t memSize = part_lut.size() * sizeof(toucanGPUSim::CGLUTMetaInfo);
-        allocAndCopyVector(&op_ptr, part_lut.data(), memSize);
-        exec_levels_luts.push_back(op_ptr);
+        appendToNetlistVec(reinterpret_cast<const char*>(part_lut.data()), memSize);
       }
     }
 
@@ -565,31 +588,19 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     if (numExecLevels != 0) {
       size_t memSize = 0;
 
-      // memRead data ptrs
-      memSize = exec_levels_memReads.size() * sizeof(toucanGPUSim::CGMemReadMetaInfo*);
-      allocAndCopyVector(&(partInfo.ops_exec_memRead), exec_levels_memReads.data(), memSize);
       // memRead counts
       memSize = exec_levels_numMemReads.size() * sizeof(size_t);
       allocAndCopyVector(&(partInfo.numOpsExecMemRead), exec_levels_numMemReads.data(), memSize);
 
-      // vecReads
-      memSize = exec_levels_vecReads.size() * sizeof(toucanGPUSim::CGVecReadMetaInfo*);
-      allocAndCopyVector(&(partInfo.ops_exec_vecRead), exec_levels_vecReads.data(), memSize);
       // counts
       memSize = exec_levels_numVecReads.size() * sizeof(size_t);
       allocAndCopyVector(&(partInfo.numOpsExecVecRead), exec_levels_numVecReads.data(), memSize);
 
       // luts
-      memSize = exec_levels_luts.size() * sizeof(toucanGPUSim::CGLUTMetaInfo*);
-      allocAndCopyVector(&(partInfo.ops_exec_lut), exec_levels_luts.data(), memSize);
-      // memRead counts
       memSize = exec_levels_numLUTs.size() * sizeof(size_t);
       allocAndCopyVector(&(partInfo.numOpsExecLUT), exec_levels_numLUTs.data(), memSize);
     } else {
       // no exec levels
-      partInfo.ops_exec_memRead = nullptr;
-      partInfo.ops_exec_vecRead = nullptr;
-      partInfo.ops_exec_lut = nullptr;
       partInfo.numOpsExecMemRead = nullptr;
       partInfo.numOpsExecVecRead = nullptr;
       partInfo.numOpsExecLUT = nullptr;
@@ -604,38 +615,30 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
 
     if (partInfo.numOpsLastExgWrite != 0) {
       size_t memSize = eachPart.ops_last_exgWrite.size() * sizeof(toucanGPUSim::CGExchangeWriteMetaInfo);
-      allocAndCopyVector(&(partInfo.ops_last_exgWrite), eachPart.ops_last_exgWrite.data(), memSize);
-    } else {
-      partInfo.ops_last_exgWrite = nullptr;
+      appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_last_exgWrite.data()), memSize);
     }
 
     if (partInfo.numOpsLastRegWrite != 0) {
       size_t memSize = eachPart.ops_last_regWrite.size() * sizeof(toucanGPUSim::CGRegWriteMetaInfo);
-      allocAndCopyVector(&(partInfo.ops_last_regWrite), eachPart.ops_last_regWrite.data(), memSize);
-    } else {
-      partInfo.ops_last_regWrite = nullptr;
+      appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_last_regWrite.data()), memSize);
     }
 
     if (partInfo.numOpsLastMemWrite != 0) {
       size_t memSize = eachPart.ops_last_memWrite.size() * sizeof(toucanGPUSim::CGMemWriteMetaInfo);
-      allocAndCopyVector(&(partInfo.ops_last_memWrite), eachPart.ops_last_memWrite.data(), memSize);
-    } else {
-      partInfo.ops_last_memWrite = nullptr;
+      appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_last_memWrite.data()), memSize);
     }
 
     if (partInfo.numOpsLastPrint != 0) {
       size_t memSize = eachPart.ops_last_print.size() * sizeof(toucanGPUSim::CGPrintMetaInfo);
-      allocAndCopyVector(&(partInfo.ops_last_print), eachPart.ops_last_print.data(), memSize);
-    } else {
-      partInfo.ops_last_print = nullptr;
+      appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_last_print.data()), memSize);
     }
 
     if (partInfo.numOpsLastStop != 0) {
       size_t memSize = eachPart.ops_last_stop.size() * sizeof(toucanGPUSim::CGStopMetaInfo);
-      allocAndCopyVector(&(partInfo.ops_last_stop), eachPart.ops_last_stop.data(), memSize);
-    } else {
-      partInfo.ops_last_stop = nullptr;
+      appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_last_stop.data()), memSize);
     }
+
+    allocAndCopyVector(&(partInfo.netlist), allNetlist.data(), allNetlist.size() * sizeof(char));
 
     gpuPartInfos.push_back(partInfo);
   }
