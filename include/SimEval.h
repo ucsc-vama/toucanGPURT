@@ -25,7 +25,7 @@ uint64_t read_reg_from_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& si
 
 void write_reg_to_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalLocs, uint64_t signalValue);
 
-void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design, size_t netlistBufferSize_host);
+void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design);
 
 bool get_eval_done();
 

@@ -139,7 +139,7 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
 
   // setup shared mem
 
-  size_t requiredSharedMem = maxValuePoolSize + (2 * (MinBufferSize + GPUMemPaddingSize));
+  size_t requiredSharedMem = maxValuePoolSize + (2 * (GPUMemPaddingSize));
   if (requiredSharedMem > maxSharedMemoryPerSM) {
     std::cerr << "Error: This simulator requires at lease " << requiredSharedMem << "B shared memory, while GPU supports only " << maxSharedMemoryPerSM << "B\n";
     return -1;
@@ -161,7 +161,7 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
 
   if (!successAllocate) {
     // cannot allocate for basic needs
-    std::cerr << "Failed to set dynamic shared memory size to " << (sharedMemPerBlock + step) << "B: " << cudaGetErrorString(statusKrnl1) << ", " << cudaGetErrorString(statusKrnl2) << std::endl;
+    std::cerr << "Failed to set dynamic shared memory size to " << sharedMemPerBlock << "B: " << cudaGetErrorString(statusKrnl1) << ", " << cudaGetErrorString(statusKrnl2) << std::endl;
     return -1;
   }
   
