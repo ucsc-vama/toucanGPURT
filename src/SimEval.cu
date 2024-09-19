@@ -70,6 +70,8 @@ typedef struct {
   size_t valuePoolSize;
   size_t numConstsInValuePool;
 
+  uint8_t *constVecPool;
+
   char* netlist;
 
   // Top level
@@ -146,6 +148,7 @@ __device__ void evalPartL0(
 }
 
 __device__ void evalExecLevels(
+  const uint8_t * __restrict constVecPool,
   uint8_t * __restrict valuePool, 
   const toucanGPUSim::CGMemReadMetaInfo * __restrict memReadOps,
   const toucanGPUSim::CGVecReadMetaInfo * __restrict vecReadOps,
@@ -189,6 +192,8 @@ __device__ void evalExecLevels(
   for (size_t op_pos = thread_rank; op_pos < numVecReadOps; op_pos += threads_in_block) {
     // vec read
     const auto op = vecReadOps[op_pos];
+
+    auto isConstVec = op.isConstVec;
         
     auto index0Val = static_cast<uint32_t>(valuePool[op.index0]);
     auto index1Val = static_cast<uint32_t>(valuePool[op.index1]);
@@ -202,7 +207,11 @@ __device__ void evalExecLevels(
     uint8_t resultVal = outRangeVal;
 
     if (vecOffset < op.vecLength) {
-      resultVal = valuePool[op.vecBase + vecOffset];
+      if (isConstVec) {
+        resultVal = constVecPool[op.vecBase + vecOffset];
+      } else {
+        resultVal = valuePool[op.vecBase + vecOffset];
+      }
     }
     valuePool[op.result] = resultVal;
   }
@@ -340,6 +349,7 @@ __device__ void evalEachPartition(size_t partId) {
     auto netlist_vecRead = align_pointer(netlist_memRead + (num_memRead * sizeof(toucanGPUSim::CGMemReadMetaInfo)));
     auto netlist_lut = align_pointer(netlist_vecRead + (num_vecRead * sizeof(toucanGPUSim::CGVecReadMetaInfo)));
     evalExecLevels(
+      partPtrs.constVecPool,
       localValuePool, 
       reinterpret_cast<const toucanGPUSim::CGMemReadMetaInfo*>(netlist_memRead),
       reinterpret_cast<const toucanGPUSim::CGVecReadMetaInfo*>(netlist_vecRead), 
@@ -528,6 +538,13 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     partInfo.valuePoolSize = eachPart.valuePoolSize;
     assert(partInfo.valuePoolSize <= UINT16_MAX);
     partInfo.numConstsInValuePool = eachPart.numConstsInValuePool;
+
+    // copy const vec pool
+    if (eachPart.constVecPool.empty()) {
+      partInfo.constVecPool = nullptr;
+    } else {
+      allocAndCopyVector(&(partInfo.constVecPool), eachPart.constVecPool.data(), eachPart.constVecPool.size());
+    }
 
     // copy operations
 
