@@ -10,6 +10,9 @@
 
 using namespace toucanGPUSim;
 
+
+// #define MAX_THREADS_PER_BLOCK_OVERRIDE 512
+
 int ToucanSimulator::setupGPU(int gpu_id) {
   // Initialize CUDA
   cudaError_t cudaStatus = cudaSetDevice(gpu_id);  // Selects the first CUDA device
@@ -43,14 +46,19 @@ int ToucanSimulator::setupGPU(int gpu_id) {
   // CUDA reserves 1KB shared mem.
   maxSharedMemoryPerSM = prop.sharedMemPerMultiprocessor - 1024;
 
+#ifdef MAX_THREADS_PER_BLOCK_OVERRIDE
+  maxThreadsPerBlock = MAX_THREADS_PER_BLOCK_OVERRIDE;
+#endif
+
   // Find a max thread number that supports cooperative group
-  while (maxThreadsPerBlock > 2 && (maxBlocksPerSMForSingleCycleKernel == 0)) {
-    maxThreadsPerBlock = maxThreadsPerBlock >> 1;
+  while (maxThreadsPerBlock > 64) {
     gpuErrchk(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
         &maxBlocksPerSMForSingleCycleKernel, 
         evalSingleCycle, 
         maxThreadsPerBlock, 
         0));
+    if (maxBlocksPerSMForSingleCycleKernel > 0) break;
+    maxThreadsPerBlock = maxThreadsPerBlock >> 1;
   }
 
   if (maxBlocksPerSMForSingleCycleKernel == 0) {
