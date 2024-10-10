@@ -88,7 +88,7 @@ namespace toucanGPUSim {
     // const
     bool hasMultipleWriter;
     // const
-    uint32_t memDepth;
+    // uint32_t memDepth;
     uint64_t memBase;
 
     uint16_t addrVec;
