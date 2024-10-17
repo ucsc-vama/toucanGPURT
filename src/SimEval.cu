@@ -1,5 +1,8 @@
 // #define NDEBUG
 
+// Note: Enable async memcpy for reg write by uncomment this macro
+// #define REG_WRITE_USE_ASYNC_MEMCPY
+
 #include "ToucanGPUGenDataTypes.h"
 
 #include "SimEval.h"
@@ -9,6 +12,13 @@
 #include <iostream>
 #include <cassert>
 #include <vector>
+
+#include <cooperative_groups.h>
+
+#ifdef REG_WRITE_USE_ASYNC_MEMCPY
+#include <cooperative_groups/memcpy_async.h>
+// #include <cuda/barrier>
+#endif
 
 using namespace toucanGPUSim;
 namespace cg = cooperative_groups;
@@ -249,6 +259,42 @@ __device__ void evalLastLevel(
   auto thread_rank = block.thread_rank();
   auto threads_in_block = block.size();
 
+  assert(numRegWriteOps <= 1 && "Only support single reg write in last level");
+  if (numRegWriteOps != 0){
+    const auto &op = regWriteOps[0];
+
+#ifdef REG_WRITE_USE_ASYNC_MEMCPY
+    size_t bytesToCopy = (op.count + 16) & 0xFFFFFFF0;
+
+    // cg::memcpy_async(block, valuePool + op.dat, regPool + op.reg, cuda::aligned_size_t<16>(bytesToCopy));
+    cg::memcpy_async(block, valuePool + op.dat, regPool + op.reg, bytesToCopy);
+#else
+    size_t intsToCopy = (op.count + 3) / 4;
+    for (size_t i = thread_rank; i < intsToCopy; i += threads_in_block) {
+      size_t poolOffset = (op.dat >> 2) + i;
+      auto val = reinterpret_cast<uint32_t*>(valuePool)[poolOffset];
+
+      size_t regOffset = (op.reg >> 2) + i;
+      reinterpret_cast<uint32_t*>(regPool)[regOffset] = val;
+    }
+#endif
+  }
+
+  assert(numExgWriteOps <= 1 && "Only support single exchange write in last level");
+  if (numExgWriteOps != 0) {
+    const auto &op = exgWriteOps[0];
+
+    size_t intsToCopy = (op.count + 3) / 4;
+    for (size_t i = thread_rank; i < intsToCopy; i += threads_in_block) {
+      size_t poolOffset = (op.localVal >> 2) + i;
+      auto val = reinterpret_cast<uint32_t*>(valuePool)[poolOffset];
+
+      size_t exchangeOffset = (op.exchangeVal >> 2) + i;
+      reinterpret_cast<uint32_t*>(exchangePool)[exchangeOffset] = val;
+    }
+  }
+
+
   for (size_t op_pos = thread_rank; op_pos < numMemWriteOps; op_pos += threads_in_block) {
     const auto op = memWriteOps[op_pos];
 
@@ -273,23 +319,6 @@ __device__ void evalLastLevel(
     }
   }
 
-  for (size_t op_pos = thread_rank; op_pos < numExgWriteOps; op_pos += threads_in_block) {
-    const auto op = exgWriteOps[op_pos];
-
-    // exchange write
-    auto localValId = op.localVal;
-    auto exchangeValId = op.exchangeVal;
-    auto val = valuePool[localValId];
-    exchangePool[exchangeValId] = val;
-  }
-
-  for (size_t op_pos = thread_rank; op_pos < numRegWriteOps; op_pos += threads_in_block) {
-    const auto op = regWriteOps[op_pos];
-
-    // reg write
-    auto datVal = valuePool[op.dat];
-    regPool[op.reg] = datVal;
-  }
 
   for (size_t op_pos = thread_rank; op_pos < numPrintOps; op_pos += threads_in_block) {
     const auto op = printOps[op_pos];
@@ -309,6 +338,10 @@ __device__ void evalLastLevel(
       shouldStop = true;
     }
   }
+
+#ifdef REG_WRITE_USE_ASYNC_MEMCPY
+  cg::wait(block); // Wait for all copies to complete
+#endif
 
 }
 
