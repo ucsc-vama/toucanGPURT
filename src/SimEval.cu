@@ -1,6 +1,7 @@
 // #define NDEBUG
 
 // Note: Enable async memcpy for reg write by uncomment this macro
+// Seems not helpful for performance
 // #define REG_WRITE_USE_ASYNC_MEMCPY
 
 #include "ToucanGPUGenDataTypes.h"
@@ -229,9 +230,13 @@ __device__ void evalExecLevels(
   for (size_t op_pos = thread_rank; op_pos < numLUTOps; op_pos += threads_in_block) {
     const auto op = lutOps[op_pos];
 
-    auto op0Val = valuePool[op.op0];
-    auto op1Val = valuePool[op.op1];
-    auto op2Val = valuePool[op.op2];
+    auto op0Id = op.op0;
+    auto op1Id = op.op1;
+    auto op2Id = op.op2;
+
+    auto op0Val = valuePool[op0Id];
+    auto op1Val = valuePool[op1Id];
+    auto op2Val = valuePool[op2Id];
 
     uint16_t lutPos = op.lutIndex + ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
     uint8_t resultVal = lutContent[lutPos];
@@ -340,6 +345,7 @@ __device__ void evalLastLevel(
   }
 
 #ifdef REG_WRITE_USE_ASYNC_MEMCPY
+  __threadfence();
   cg::wait(block); // Wait for all copies to complete
 #endif
 
