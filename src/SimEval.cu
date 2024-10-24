@@ -27,22 +27,22 @@ namespace cg = cooperative_groups;
 
 
 // Pos for op nop: 0
+// Pos for op rep1b: 16
+// Pos for op xorr: 18
 // Pos for op and: 34
 // Pos for op or: 290
 // Pos for op xor: 546
-// Pos for op rep1b: 16
 // Pos for op cmp_eq: 802
 // Pos for op mul_hi: 1058
 // Pos for op mul_lo: 1314
-// Pos for op add: 2082
 // Pos for op carry: 1570
+// Pos for op add: 2082
 // Pos for op mux: 2594
 // Pos for op dshl: 3106
-// Pos for op dshr: 4130
-// Pos for op xorr: 18
 // Pos for op shl1: 3362
 // Pos for op shl2: 3618
 // Pos for op shl3: 3874
+// Pos for op dshr: 4130
 // Pos for op shr1: 0
 // Pos for op shr2: 0
 // Pos for op shr3: 0
@@ -144,8 +144,33 @@ __device__ void evalPartL0(
     const auto &op = topLevelRegReadOps[op_pos];
     auto regValId = op.reg;
     auto resultId = op.result;
-    auto regVal = regPool[regValId];
-    valuePool[resultId] = regVal;
+    auto byteCount = op.byteCount;
+
+    if (byteCount != 0) {
+      if (byteCount == 1) {
+        auto regVal = regPool[regValId];
+        valuePool[resultId] = regVal;
+      } else {
+        // multiple bytes
+
+        // assert((byteCount & 0x3) == 0);
+        // assert((regValId & 0x03) == 0);
+        auto intCount = byteCount >> 2;
+
+        for (int i = 0; i < intCount; i++) {
+          size_t regOffset = (regValId >> 2) + i;
+          uint32_t val = reinterpret_cast<uint32_t*>(regPool)[regOffset];
+
+          valuePool[resultId + 3] = val >> 24;
+          valuePool[resultId + 2] = (val >> 16) & 0xf;
+          valuePool[resultId + 1] = (val >> 8) & 0xf;
+          valuePool[resultId] = val & 0xf;
+
+          resultId += 4;
+        }
+      }
+    }
+
   }
 
   // Eval exchange reads
