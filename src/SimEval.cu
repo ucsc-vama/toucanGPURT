@@ -178,8 +178,34 @@ __device__ void evalPartL0(
     const auto &op = topLevelExgReadOps[op_pos];
     auto exgValId = op.exchangeVal;
     auto localValId = op.localVal;
-    auto exgVal = exchangePool[exgValId];
-    valuePool[localValId] = exgVal;
+    auto byteCount = op.byteCount;
+
+    if (byteCount != 0) {
+      if (byteCount == 1) {
+        auto exgVal = exchangePool[exgValId];
+        valuePool[localValId] = exgVal;
+      } else {
+        // multiple bytes
+
+        // assert((byteCount & 0x3) == 0);
+        // assert((regValId & 0x03) == 0);
+        auto intCount = byteCount >> 2;
+
+        for (int i = 0; i < intCount; i++) {
+          size_t exgOffset = (exgValId >> 2) + i;
+          uint32_t val = reinterpret_cast<uint32_t*>(exchangePool)[exgOffset];
+
+          valuePool[localValId + 3] = val >> 24;
+          valuePool[localValId + 2] = (val >> 16) & 0xf;
+          valuePool[localValId + 1] = (val >> 8) & 0xf;
+          valuePool[localValId] = val & 0xf;
+
+          localValId += 4;
+        }
+      }
+    }
+
+
   }
 }
 
