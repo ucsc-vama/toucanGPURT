@@ -140,12 +140,16 @@ static void serializeSimPartitionInfo(std::ostream& out, const toucanGPUSim::Sim
   size_t execSize = info.ops_exec_memRead.size();
   out.write(reinterpret_cast<const char*>(&execSize), sizeof(execSize));
   assert(info.ops_exec_vecRead.size() == execSize);
-  assert(info.ops_exec_lut.size() == execSize);
+  assert(info.ops_exec_lut1.size() == execSize);
+  assert(info.ops_exec_lut2.size() == execSize);
+  assert(info.ops_exec_lut3.size() == execSize);
 
   for (size_t levelId = 0; levelId < execSize; levelId++) {
     serializeVector(out, info.ops_exec_memRead[levelId]);
     serializeVector(out, info.ops_exec_vecRead[levelId]);
-    serializeVector(out, info.ops_exec_lut[levelId]);
+    serializeVector(out, info.ops_exec_lut1[levelId]);
+    serializeVector(out, info.ops_exec_lut2[levelId]);
+    serializeVector(out, info.ops_exec_lut3[levelId]);
   }
 
   serializeVector(out, info.ops_last_exgWrite);
@@ -169,11 +173,15 @@ static void deserializeSimPartitionInfo(std::istream& in, toucanGPUSim::SimParti
 
   info.ops_exec_vecRead.resize(execSize);
   info.ops_exec_memRead.resize(execSize);
-  info.ops_exec_lut.resize(execSize);
+  info.ops_exec_lut1.resize(execSize);
+  info.ops_exec_lut2.resize(execSize);
+  info.ops_exec_lut3.resize(execSize);
   for (size_t levelId = 0; levelId < execSize; levelId++) {
     deserializeVector(in, info.ops_exec_memRead[levelId]);
     deserializeVector(in, info.ops_exec_vecRead[levelId]);
-    deserializeVector(in, info.ops_exec_lut[levelId]);
+    deserializeVector(in, info.ops_exec_lut1[levelId]);
+    deserializeVector(in, info.ops_exec_lut2[levelId]);
+    deserializeVector(in, info.ops_exec_lut3[levelId]);
   }
 
   deserializeVector(in, info.ops_last_exgWrite);

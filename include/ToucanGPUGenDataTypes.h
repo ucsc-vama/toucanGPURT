@@ -8,6 +8,8 @@
 
 #include <fstream>
 
+
+// Note: 4 may not be the best number
 #define POLICY_PACKED_MAX_COPY_INT_COUNT 4
 
 namespace toucanGPUSim {
@@ -32,7 +34,26 @@ namespace toucanGPUSim {
   };
 
 
-  struct CGLUTMetaInfo {
+  struct CGLUT1MetaInfo {
+    // lut size: 4898
+    uint16_t lutIndex;
+
+    uint16_t op2;
+
+    uint16_t result;
+  };
+
+  struct CGLUT2MetaInfo {
+    // lut size: 4898
+    uint16_t lutIndex;
+
+    uint16_t op1;
+    uint16_t op2;
+
+    uint16_t result;
+  };
+
+  struct CGLUT3MetaInfo {
     // lut size: 4898
     uint16_t lutIndex;
 
@@ -126,7 +147,9 @@ namespace toucanGPUSim {
 
     std::vector<std::vector<CGMemReadMetaInfo>> ops_exec_memRead;
     std::vector<std::vector<CGVecReadMetaInfo>> ops_exec_vecRead;
-    std::vector<std::vector<CGLUTMetaInfo>> ops_exec_lut;
+    std::vector<std::vector<CGLUT1MetaInfo>> ops_exec_lut1;
+    std::vector<std::vector<CGLUT2MetaInfo>> ops_exec_lut2;
+    std::vector<std::vector<CGLUT3MetaInfo>> ops_exec_lut3;
 
     std::vector<CGExchangeWriteMetaInfo> ops_last_exgWrite;
     std::vector<CGRegWriteMetaInfo> ops_last_regWrite;
