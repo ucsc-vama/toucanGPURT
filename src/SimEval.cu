@@ -72,6 +72,11 @@ __device__ char* align_pointer(char* ptr) {
   return ptr + paddingSize;
 }
 
+__host__ __device__ size_t getNumPadWithExtraAlignment(size_t elementSize, size_t alignment) {
+  size_t extraPadding = alignment - (elementSize % alignment);
+  if (extraPadding == alignment) extraPadding = 0;
+  return elementSize + extraPadding;
+};
 
 #define LUT_SIZE 5154
 
@@ -229,107 +234,136 @@ __device__ void evalExecLevels(
   auto thread_rank = block.thread_rank();
   auto threads_in_block = block.size();
 
-  for (size_t op_pos = thread_rank; op_pos < numMemReadOps; op_pos += threads_in_block) {
-    const auto op = memReadOps[op_pos];
 
-    auto enVal = valuePool[op.en];
-    if (enVal != 0) {
-      auto addrVecId = op.addrVec;
+  size_t thread_start_memReads = 0;
+  size_t thread_start_vecReads = thread_start_memReads + getNumPadWithExtraAlignment(numMemReadOps, 32);
+  size_t thread_start_lut1 = thread_start_vecReads + getNumPadWithExtraAlignment(numVecReadOps, 32);
+  size_t thread_start_lut2 = thread_start_lut1 + getNumPadWithExtraAlignment(numLUT1Ops, 32);
+  size_t thread_start_lut3 = thread_start_lut2 + getNumPadWithExtraAlignment(numLUT2Ops, 32);
+  size_t total_work_amount = thread_start_lut3 + getNumPadWithExtraAlignment(numLUT3Ops, 32);
 
-      uint32_t addr = 0;
-      for (size_t i = 0; i < 8; i++) {
-        auto addrFragmentVal = valuePool[addrVecId + i];
-        addr = addr | (addrFragmentVal << (i * 4));
-      }
 
-      // assert(addr <= op.memDepth && "Address exceed memory depth");
-      if (op.hasMultipleWriter) {
-        // assert(addr <= (UINT32_MAX >> 2) && "Memory index too large!");
-        addr <<= 2;
-      }
-      auto realIndex = op.memBase + addr;
-      auto resultVal = memPool[realIndex];
-      
-      valuePool[op.result] = resultVal;
-    } 
-    // else {
-    //   valuePool[op.mem.result] = 0;
-    // }
-  }
-
-  for (size_t op_pos = thread_rank; op_pos < numVecReadOps; op_pos += threads_in_block) {
-    // vec read
-    const auto op = vecReadOps[op_pos];
-
-    auto isConstVec = op.isConstVec;
+  for (size_t exec_pos = thread_rank; exec_pos < total_work_amount; exec_pos += threads_in_block) {
+    if (exec_pos < (thread_start_vecReads)) {
+      auto op_pos = exec_pos - thread_start_memReads;
+      if (op_pos < numMemReadOps) {
         
-    auto index0Val = static_cast<uint32_t>(valuePool[op.index0]);
-    auto index1Val = static_cast<uint32_t>(valuePool[op.index1]);
-    auto index2Val = static_cast<uint32_t>(valuePool[op.index2]);
-    auto index3Val = static_cast<uint32_t>(valuePool[op.index3]);
+        const auto op = memReadOps[op_pos];
 
-    auto outRangeVal = valuePool[op.outRangeValue];
+        auto enVal = valuePool[op.en];
+        if (enVal != 0) {
+          auto addrVecId = op.addrVec;
 
-    uint32_t vecOffset = ((index0Val << 12) | (index1Val << 8) | (index2Val << 4) | index3Val) + op.offset;
+          uint32_t addr = 0;
+          for (size_t i = 0; i < 8; i++) {
+            auto addrFragmentVal = valuePool[addrVecId + i];
+            addr = addr | (addrFragmentVal << (i * 4));
+          }
 
-    uint8_t resultVal = outRangeVal;
-
-    if (vecOffset < op.vecLength) {
-      if (isConstVec) {
-        resultVal = constVecPool[op.vecBase + vecOffset];
-      } else {
-        resultVal = valuePool[op.vecBase + vecOffset];
+          // assert(addr <= op.memDepth && "Address exceed memory depth");
+          if (op.hasMultipleWriter) {
+            // assert(addr <= (UINT32_MAX >> 2) && "Memory index too large!");
+            addr <<= 2;
+          }
+          auto realIndex = op.memBase + addr;
+          auto resultVal = memPool[realIndex];
+          
+          valuePool[op.result] = resultVal;
+        } 
       }
+      continue;
     }
-    valuePool[op.result] = resultVal;
+
+    if (exec_pos < thread_start_lut1) {
+      auto op_pos = exec_pos - thread_start_vecReads;
+      if (op_pos < (numVecReadOps)) {
+        // vec read
+        const auto op = vecReadOps[op_pos];
+
+        auto isConstVec = op.isConstVec;
+            
+        auto index0Val = static_cast<uint32_t>(valuePool[op.index0]);
+        auto index1Val = static_cast<uint32_t>(valuePool[op.index1]);
+        auto index2Val = static_cast<uint32_t>(valuePool[op.index2]);
+        auto index3Val = static_cast<uint32_t>(valuePool[op.index3]);
+
+        auto outRangeVal = valuePool[op.outRangeValue];
+
+        uint32_t vecOffset = ((index0Val << 12) | (index1Val << 8) | (index2Val << 4) | index3Val) + op.offset;
+
+        uint8_t resultVal = outRangeVal;
+
+        if (vecOffset < op.vecLength) {
+          if (isConstVec) {
+            resultVal = constVecPool[op.vecBase + vecOffset];
+          } else {
+            resultVal = valuePool[op.vecBase + vecOffset];
+          }
+        }
+        valuePool[op.result] = resultVal;
+      }
+      continue;
+    }
+
+    if (exec_pos < thread_start_lut2) {
+      auto op_pos = exec_pos - thread_start_lut1;
+      if (op_pos < numLUT1Ops) {
+        const auto op = lut1Ops[op_pos];
+
+        auto op2Id = op.op2;
+        auto op2Val = valuePool[op2Id];
+
+        uint16_t lutPos = op.lutIndex + op2Val;
+        uint8_t resultVal = lutContent[lutPos];
+
+        auto resultPos = op.result;
+        valuePool[resultPos] = resultVal;
+      }
+      continue;
+    }
+
+    if (exec_pos < thread_start_lut3) {
+      auto op_pos = exec_pos - thread_start_lut2;
+      if (op_pos < numLUT2Ops) {
+        const auto op = lut2Ops[op_pos];
+
+        auto op1Id = op.op1;
+        auto op2Id = op.op2;
+
+        auto op1Val = valuePool[op1Id];
+        auto op2Val = valuePool[op2Id];
+
+        uint16_t lutPos = op.lutIndex + ((op1Val << 4) | op2Val);
+        uint8_t resultVal = lutContent[lutPos];
+
+        auto resultPos = op.result;
+        valuePool[resultPos] = resultVal;
+      }
+      continue;
+    }
+
+    // else: lut3
+    auto op_pos = exec_pos - thread_start_lut3;
+    if (op_pos < numLUT3Ops) {
+      const auto op = lut3Ops[op_pos];
+
+      auto op0Id = op.op0;
+      auto op1Id = op.op1;
+      auto op2Id = op.op2;
+
+      auto op0Val = valuePool[op0Id];
+      auto op1Val = valuePool[op1Id];
+      auto op2Val = valuePool[op2Id];
+
+      uint16_t lutPos = op.lutIndex + ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
+      uint8_t resultVal = lutContent[lutPos];
+
+      auto resultPos = op.result;
+      valuePool[resultPos] = resultVal;
+    }
   }
 
-  for (size_t op_pos = thread_rank; op_pos < numLUT1Ops; op_pos += threads_in_block) {
-    const auto op = lut1Ops[op_pos];
 
-    auto op2Id = op.op2;
-    auto op2Val = valuePool[op2Id];
-
-    uint16_t lutPos = op.lutIndex + op2Val;
-    uint8_t resultVal = lutContent[lutPos];
-
-    auto resultPos = op.result;
-    valuePool[resultPos] = resultVal;
-  }
-
-  for (size_t op_pos = thread_rank; op_pos < numLUT2Ops; op_pos += threads_in_block) {
-    const auto op = lut2Ops[op_pos];
-
-    auto op1Id = op.op1;
-    auto op2Id = op.op2;
-
-    auto op1Val = valuePool[op1Id];
-    auto op2Val = valuePool[op2Id];
-
-    uint16_t lutPos = op.lutIndex + ((op1Val << 4) | op2Val);
-    uint8_t resultVal = lutContent[lutPos];
-
-    auto resultPos = op.result;
-    valuePool[resultPos] = resultVal;
-  }
-
-  for (size_t op_pos = thread_rank; op_pos < numLUT3Ops; op_pos += threads_in_block) {
-    const auto op = lut3Ops[op_pos];
-
-    auto op0Id = op.op0;
-    auto op1Id = op.op1;
-    auto op2Id = op.op2;
-
-    auto op0Val = valuePool[op0Id];
-    auto op1Val = valuePool[op1Id];
-    auto op2Val = valuePool[op2Id];
-
-    uint16_t lutPos = op.lutIndex + ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
-    uint8_t resultVal = lutContent[lutPos];
-
-    auto resultPos = op.result;
-    valuePool[resultPos] = resultVal;
-  }
 
 }
 
