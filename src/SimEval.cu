@@ -568,8 +568,6 @@ __device__ void evalEachRegion(
       auto partId = partIdsInCurrentRegion[block_pos];
       evalEachPartition(partId);
     }
-
-    return;
   }
 }
 
@@ -598,7 +596,6 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
       __threadfence();
       grid.sync();
     }
-    grid.sync();
     if (shouldStop) {
       auto thread_rank = grid.thread_rank();
       if (thread_rank == 0) {
