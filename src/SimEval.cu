@@ -81,6 +81,14 @@ __host__ __device__ size_t getNumPadWithExtraAlignment(size_t elementSize, size_
 #define LUT_SIZE 5154
 
 typedef struct {
+  size_t numMemRead;
+  size_t numVecRead;
+  size_t numLUT1;
+  size_t numLUT2;
+  size_t numLUT3;
+} SimExecLevelInfo;
+
+typedef struct {
   // Private data
   uint8_t *valuePool;
   size_t valuePoolSize;
@@ -95,11 +103,8 @@ typedef struct {
   size_t numOpsL0ExgRead;
 
   // Exec level
-  size_t *numOpsExecMemRead;
-  size_t *numOpsExecVecRead;
-  size_t *numOpsExecLUT1;
-  size_t *numOpsExecLUT2;
-  size_t *numOpsExecLUT3;
+  uint32_t numExecLevels;
+  SimExecLevelInfo *execInfo;
 
   // Last level
   size_t numOpsLastExgWrite;
@@ -108,7 +113,6 @@ typedef struct {
   size_t numOpsLastPrint;
   size_t numOpsLastStop;
 
-  uint32_t numExecLevels;
 } SimPartitionPtrs;
 
 
@@ -500,11 +504,11 @@ __device__ void evalEachPartition(size_t partId) {
   auto netlist_eval_start = netlist_regRead + (partPtrs.numOpsL0RegRead * sizeof(toucanGPUSim::CGRegReadMetaInfo));
 
   for (size_t exec_level_id = 0; exec_level_id < partPtrs.numExecLevels; exec_level_id++) {
-    auto num_memRead = partPtrs.numOpsExecMemRead[exec_level_id];
-    auto num_vecRead = partPtrs.numOpsExecVecRead[exec_level_id];
-    auto num_lut1 = partPtrs.numOpsExecLUT1[exec_level_id];
-    auto num_lut2 = partPtrs.numOpsExecLUT2[exec_level_id];
-    auto num_lut3 = partPtrs.numOpsExecLUT3[exec_level_id];
+    const auto num_memRead = partPtrs.execInfo[exec_level_id].numMemRead;
+    const auto num_vecRead = partPtrs.execInfo[exec_level_id].numVecRead;
+    const auto num_lut1 = partPtrs.execInfo[exec_level_id].numLUT1;
+    const auto num_lut2 = partPtrs.execInfo[exec_level_id].numLUT2;
+    const auto num_lut3 = partPtrs.execInfo[exec_level_id].numLUT3;
 
     auto netlist_memRead = align_pointer(netlist_eval_start);
     auto netlist_vecRead = align_pointer(netlist_memRead + (num_memRead * sizeof(toucanGPUSim::CGMemReadMetaInfo)));
@@ -727,11 +731,7 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
 
 
     // middle level ops
-    std::vector<size_t> exec_levels_numMemReads;
-    std::vector<size_t> exec_levels_numVecReads;
-    std::vector<size_t> exec_levels_numLUT1s;
-    std::vector<size_t> exec_levels_numLUT2s;
-    std::vector<size_t> exec_levels_numLUT3s;
+    std::vector<SimExecLevelInfo> level_size_info;
 
     size_t numExecLevels = eachPart.ops_exec_memRead.size();
     assert(eachPart.ops_exec_vecRead.size() == numExecLevels);
@@ -746,11 +746,13 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
       const auto &part_lut2 = eachPart.ops_exec_lut2[level_id];
       const auto &part_lut3 = eachPart.ops_exec_lut3[level_id];
 
-      exec_levels_numMemReads.push_back(part_memRead.size());
-      exec_levels_numVecReads.push_back(part_vecRead.size());
-      exec_levels_numLUT1s.push_back(part_lut1.size());
-      exec_levels_numLUT2s.push_back(part_lut2.size());
-      exec_levels_numLUT3s.push_back(part_lut3.size());
+      SimExecLevelInfo level_info;
+      level_info.numMemRead = part_memRead.size();
+      level_info.numVecRead = part_vecRead.size();
+      level_info.numLUT1 = part_lut1.size();
+      level_info.numLUT2 = part_lut2.size();
+      level_info.numLUT3 = part_lut3.size();
+      level_size_info.push_back(level_info);
 
       if (!part_memRead.empty()) {
         size_t memSize = part_memRead.size() * sizeof(toucanGPUSim::CGMemReadMetaInfo);
@@ -786,27 +788,11 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
       size_t memSize = 0;
 
       // memRead counts
-      memSize = exec_levels_numMemReads.size() * sizeof(size_t);
-      allocAndCopyVector(&(partInfo.numOpsExecMemRead), exec_levels_numMemReads.data(), memSize);
-
-      // counts
-      memSize = exec_levels_numVecReads.size() * sizeof(size_t);
-      allocAndCopyVector(&(partInfo.numOpsExecVecRead), exec_levels_numVecReads.data(), memSize);
-
-      // luts
-      memSize = exec_levels_numLUT1s.size() * sizeof(size_t);
-      allocAndCopyVector(&(partInfo.numOpsExecLUT1), exec_levels_numLUT1s.data(), memSize);
-      memSize = exec_levels_numLUT2s.size() * sizeof(size_t);
-      allocAndCopyVector(&(partInfo.numOpsExecLUT2), exec_levels_numLUT2s.data(), memSize);
-      memSize = exec_levels_numLUT3s.size() * sizeof(size_t);
-      allocAndCopyVector(&(partInfo.numOpsExecLUT3), exec_levels_numLUT3s.data(), memSize);
+      memSize = level_size_info.size() * sizeof(SimExecLevelInfo);
+      allocAndCopyVector(&(partInfo.execInfo), level_size_info.data(), memSize);
     } else {
       // no exec levels
-      partInfo.numOpsExecMemRead = nullptr;
-      partInfo.numOpsExecVecRead = nullptr;
-      partInfo.numOpsExecLUT1 = nullptr;
-      partInfo.numOpsExecLUT2 = nullptr;
-      partInfo.numOpsExecLUT3 = nullptr;
+      partInfo.execInfo = nullptr;
     }
 
     // last level
