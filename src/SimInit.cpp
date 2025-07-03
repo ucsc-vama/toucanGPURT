@@ -18,7 +18,6 @@ void SimDesignInfo::Init() {
   regPool.resize(regPoolSize, 0);
   // TODO: Consider faster init
   memPool.resize(memPoolSize, 0);
-  exchangePool.resize(exchangePoolSize, 0);
 
   for (auto &eachPartition: parts) {
     // Expand value pool
