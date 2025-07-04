@@ -26,43 +26,20 @@ namespace cg = cooperative_groups;
 
 
 
-// Pos for op nop: 0
-// Pos for op rep1b: 16
-// Pos for op xorr: 18
-// Pos for op and: 34
-// Pos for op or: 290
-// Pos for op xor: 546
-// Pos for op cmp_eq: 802
-// Pos for op mul_hi: 1058
-// Pos for op mul_lo: 1314
-// Pos for op carry: 1570
-// Pos for op add: 2082
-// Pos for op mux: 2594
-// Pos for op dshl: 3106
-// Pos for op shl1: 3362
-// Pos for op shl2: 3618
-// Pos for op shl3: 3874
-// Pos for op dshr: 4130
-// Pos for op shr1: 0
-// Pos for op shr2: 0
-// Pos for op shr3: 0
 
 
-
-
-// bool eval(toucanGPUSim::SimDesignInfo &design, bool enablePrint) {
-//   // TODO: eval part by part
-//   for (const auto &eachRegionParts: design.regionPartitionIds) {
-//     for (const auto partId: eachRegionParts) {
-//       auto &part = design.parts[partId];
-//       evalPartL0(design, part);
-//       evalExecLevels(design, part, design.lut);
-//       evalLastLevel(design, part, enablePrint);
-//     }
-//   }
-//   return design.shouldStop;
-// }
 #define NETLIST_ALIGNMENT 16
+#define LUT_SIZE 5154
+
+#define MICROPART_REGULAR_MAX_LEVELS 64
+#define MICROPART_REGULAR_MAGIC 0xfb709394
+#define MICROPART_VECREAD_MAGIC 0xfb809917
+#define MICROPART_MEMREAD_MAGIC 0xcccccccc
+#define MICROPART_VECOP_MAGIC 0xbeef1234
+
+#define LUT_NOP_INDEX 0
+
+
 __host__ __device__ size_t getExtraAlignBytes(size_t memSize) {
   return (NETLIST_ALIGNMENT - (memSize % NETLIST_ALIGNMENT)) % NETLIST_ALIGNMENT;
 };
@@ -78,40 +55,394 @@ __host__ __device__ size_t getNumPadWithExtraAlignment(size_t elementSize, size_
   return elementSize + extraPadding;
 };
 
-#define LUT_SIZE 5154
+
 
 typedef struct {
-  size_t numMemRead;
-  size_t numVecRead;
-  size_t numLUT1;
-  size_t numLUT2;
-  size_t numLUT3;
-} SimExecLevelInfo;
+  uint32_t magic;
+  uint32_t partMiddleLevels;
+  uint8_t numOpsAtEachLevel[MICROPART_REGULAR_MAX_LEVELS];
+} SimMicroPartNetlistHeader;
+
+
+
+void copyMicroPartToNetlist(const toucanGPUSim::CGMicroPartInfo &mPart, std::vector<char> &bytes) {
+  auto appendUINT32 = [&bytes](uint32_t dat) {
+    for (size_t i = 0; i < sizeof(uint32_t); i++) {
+      bytes.push_back(reinterpret_cast<char*>(&dat)[i]);
+    }
+  };
+
+  auto appendByte = [&bytes](uint8_t dat) {
+    bytes.push_back(static_cast<char>(dat));
+  };
+
+  auto appendOperations = [&bytes](const auto& operations) {
+    const char* data = reinterpret_cast<const char*>(operations.data());
+    size_t size = operations.size() * sizeof(typename std::decay<decltype(operations)>::type::value_type);
+    bytes.insert(bytes.end(), data, data + size);
+  };
+
+  if (mPart.isLUTPart) {
+    // LUT part serialization
+    appendUINT32(MICROPART_REGULAR_MAGIC);
+    appendUINT32(mPart.middleLevels.size());
+    
+    // Validate constraints
+    assert(mPart.middleLevels.size() + 2 <= MICROPART_REGULAR_MAX_LEVELS);
+    assert(mPart.topLevel.size() <= 32);
+    assert(mPart.lastLevel.size() <= 32);
+    for (const auto &eachLevel: mPart.middleLevels) {
+      assert(eachLevel.size() <= 32);
+    }
+
+    // Write level sizes header (MICROPART_REGULAR_MAX_LEVELS bytes)
+    // topLevel size
+    appendByte(static_cast<uint8_t>(mPart.topLevel.size()));
+    
+    // middleLevels sizes
+    for (const auto &eachLevel: mPart.middleLevels) {
+      appendByte(static_cast<uint8_t>(eachLevel.size()));
+    }
+    
+    // lastLevel size
+    appendByte(static_cast<uint8_t>(mPart.lastLevel.size()));
+    
+    // Pad remaining bytes to reach MICROPART_REGULAR_MAX_LEVELS
+    size_t usedBytes = 1 + mPart.middleLevels.size() + 1; // topLevel + middleLevels + lastLevel
+    for (size_t i = usedBytes; i < MICROPART_REGULAR_MAX_LEVELS; i++) {
+      appendByte(0);
+    }
+
+    // Serialize operations in order
+    // 1. topLevel operations
+    appendOperations(mPart.topLevel);
+    
+    // 2. middleLevels operations (each level)
+    for (const auto &eachLevel: mPart.middleLevels) {
+      appendOperations(eachLevel);
+    }
+    
+    // 3. lastLevel operations
+    appendOperations(mPart.lastLevel);
+
+  } else if (mPart.vecRead.size() != 0) {
+    // Vector read part
+    appendUINT32(MICROPART_VECREAD_MAGIC);
+    appendUINT32(mPart.vecRead.size());
+    appendOperations(mPart.vecRead);
+    
+  } else if (mPart.vecArithAndLogic.size() != 0) {
+    // Vector arithmetic/logic part
+    appendUINT32(MICROPART_VECOP_MAGIC);
+    appendUINT32(mPart.vecArithAndLogic.size());
+    appendOperations(mPart.vecArithAndLogic);
+    
+  } else {
+    // Memory read part
+    assert(mPart.memRead.size() != 0);
+    appendUINT32(MICROPART_MEMREAD_MAGIC);
+    appendUINT32(mPart.memRead.size());
+    appendOperations(mPart.memRead);
+  }
+}
+
+
+
+
+// Device function to evaluate a single MicroPart
+// Each MicroPart should be evaluated by a single GPU thread warp
+__device__ void evalSingleMicroPart(
+  uint8_t * __restrict valuePool,
+  const uint8_t * __restrict constVecPool,
+  char * __restrict netlistPtr
+) {
+  auto warp = cooperative_groups::tiled_partition<32>(cooperative_groups::this_thread_block());
+  auto lane_id = warp.thread_rank();
+  
+  // Read the header to determine MicroPart type
+  uint32_t *header = reinterpret_cast<uint32_t*>(netlistPtr);
+  auto magic = header[0];
+  auto second_uint = header[1];
+
+  
+  
+  if (magic == MICROPART_REGULAR_MAGIC) {
+    // LUT MicroPart
+    SimMicroPartNetlistHeader *header = reinterpret_cast<SimMicroPartNetlistHeader*>(netlistPtr);
+
+    char *dataPtr = netlistPtr + sizeof(SimMicroPartNetlistHeader);
+    
+    uint32_t numMiddleLevels = second_uint;
+    uint8_t *levelSizes = header->numOpsAtEachLevel;
+    
+    // Get level sizes
+    // uint8_t topLevelSize = levelSizes[0];
+    // uint8_t lastLevelSize = levelSizes[1 + numMiddleLevels];
+    
+    // Process operations sequentially through levels
+    char *currentPtr = dataPtr;
+    uint8_t thisLaneShuffleVal = 0;
+    
+    // 1. Process top level operations (each thread handles one operation)
+    uint8_t currentLevelSize = levelSizes[0];
+    if (lane_id < currentLevelSize) {
+      auto topOps = reinterpret_cast<const toucanGPUSim::CGMicroPartLUTTopLevelOp*>(currentPtr);
+      const auto &op = topOps[lane_id];
+      auto lutIndex = op.lutIndex;
+      auto op0 = op.op0;
+      auto op1 = op.op1;
+      auto op2 = op.op2;
+      auto op0Val = (op0 < 16) ? op0 : valuePool[op0];
+      auto op1Val = (op0 < 16) ? op0 : valuePool[op0]; 
+      auto op2Val = (op0 < 16) ? op0 : valuePool[op0];
+      
+      uint16_t lutPos = op.lutIndex + ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
+      uint8_t resultVal = lutContent[lutPos];
+
+      thisLaneShuffleVal = resultVal;
+    }
+    currentPtr += currentLevelSize * sizeof(toucanGPUSim::CGMicroPartLUTTopLevelOp);
+    
+    warp.sync();
+    
+    // 2. Process middle level operations
+    for (uint32_t level = 0; level < numMiddleLevels; level++) {
+      currentLevelSize = levelSizes[1 + level];
+
+      auto middleOps = reinterpret_cast<const toucanGPUSim::CGMicroPartLUTMiddleLevelOp*>(currentPtr);
+      const auto &op = middleOps[lane_id];
+
+      // Default value. Can be changed to any lane
+      uint16_t lutIndex = LUT_NOP_INDEX;
+      uint8_t op0 = 0;
+      uint8_t op1 = 0;
+      uint8_t op2 = 0;
+
+      if (lane_id < currentLevelSize) {
+        // Decode operands (0~15: const, 32~63: value from other threads)
+        lutIndex = op.lutIndex();
+        auto op0 = op.op0();
+        auto op1 = op.op1();
+        auto op2 = op.op2();
+      }
+
+      // Every thread in the wrap should participate in shuffle
+      // T __shfl_sync(unsigned mask, T var, int srcLane, int width=warpSize);
+      auto op0Val = __shfl_sync(0xFFFFFFFF, thisLaneShuffleVal, op0);
+      auto op1Val = __shfl_sync(0xFFFFFFFF, thisLaneShuffleVal, op1);
+      auto op2Val = __shfl_sync(0xFFFFFFFF, thisLaneShuffleVal, op2);
+
+      // update value if it's actually a const
+      if (op0 < 32) {
+        assert(op0 < 16);
+        op0Val = op0;
+      }
+      if (op1 < 32) {
+        assert(op1 < 16);
+        op1Val = op1;
+      }
+      if (op2 < 32) {
+        assert(op2 < 16);
+        op2Val = op2;
+      }
+
+      uint8_t resultVal;
+      if (lutIndex == LUT_NOP_INDEX) {
+        resultVal = op2Val;
+      } else {
+        uint16_t lutPos = op.lutIndex() + ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
+        resultVal = lutContent[lutPos];
+      }
+      
+      // store for next shuffle
+      thisLaneShuffleVal = resultVal;
+
+      currentPtr += currentLevelSize * sizeof(toucanGPUSim::CGMicroPartLUTMiddleLevelOp);
+      warp.sync();
+    }
+    
+    // 3. Process last level operations (write back)
+    currentLevelSize = levelSizes[1 + numMiddleLevels];
+
+    auto lastOps = reinterpret_cast<const toucanGPUSim::CGMicroPartLUTLastLevelWriteBack*>(currentPtr);
+    const auto &op = lastOps[lane_id];
+
+    uint8_t shuffleId = 0;
+    uint16_t resultId = 0;
+
+    if (lane_id < currentLevelSize) {
+      shuffleId = op.shuffleId;
+      resultId = op.result;
+    }
+
+    auto resultVal = __shfl_sync(0xFFFFFFFF, thisLaneShuffleVal, shuffleId);
+
+    // update value if it's actually a const
+    if (shuffleId < 32) {
+      assert(shuffleId < 16);
+      resultVal = shuffleId;
+    }
+
+    if (lane_id < currentLevelSize) {
+      // write back to smem
+      valuePool[resultId] = resultVal;
+    }
+    
+  } else if (magic == MICROPART_VECREAD_MAGIC) {
+    // Vector read MicroPart
+    uint32_t numOps = second_uint;
+    dataPtr = netlistPtr + (2 * sizeof(uint32_t));
+    
+    if (lane_id < numOps) {
+      auto vecReadOps = reinterpret_cast<const toucanGPUSim::CGMicroPartVecRead*>(dataPtr);
+      const auto &op = vecReadOps[lane_id];
+      
+      auto index0Val = static_cast<uint32_t>(valuePool[op.index0]);
+      auto index1Val = static_cast<uint32_t>(valuePool[op.index1]);
+      auto index2Val = static_cast<uint32_t>(valuePool[op.index2]);
+      auto index3Val = static_cast<uint32_t>(valuePool[op.index3]);
+      
+      
+      
+      uint32_t vecOffset = ((index0Val << 12) | (index1Val << 8) | (index2Val << 4) | index3Val) + op.offset;
+      
+      uint8_t resultVal;
+
+      if (vecOffset < vecLength) {
+        if (op.isConstVec) {
+          resultVal = constVecPool[op.vecBase + vecOffset];
+        } else {
+          resultVal = valuePool[op.vecBase + vecOffset];
+        }
+      } else {
+        auto outRangeVal = valuePool[op.outRangeValue];
+        resultVal = outRangeVal;
+      }
+      valuePool[op.result] = resultVal;
+    }
+    
+  } else if (magic == MICROPART_VECOP_MAGIC) {
+    // Vector arithmetic/logic MicroPart
+    uint32_t numOps = second_uint;
+    dataPtr = netlistPtr + (2 * sizeof(uint32_t));
+    
+    if (lane_id < numOps) {
+      auto vecOpOps = reinterpret_cast<const toucanGPUSim::CGMicroPartVecArithOrLogic*>(dataPtr);
+      const auto &op = vecOpOps[lane_id];
+
+      // For now, only support vector element width 4
+      const auto vecElemWidth = 4;
+      auto vecLength = op.vecLength;
+      
+      // Process vector operations
+      assert(vecLength * 4 < 128);
+
+      bool isV1Const = (op.isV1V2Const & 0b10) != 0;
+      bool isV2Const = (op.isV1V2Const & 0b01) != 0;
+
+      auto v1Base = op.vec1Base;
+      auto v2Base = op.vec2Base;
+
+      __int128 v1Val, v2Val;
+
+      for (int i = 0; i < vecLength; i++) {
+        __int128 temp;
+
+        uint8_t v1_seg = isV1Const ? constVecPool[v1Base + i] : valuePool[v1Base + i];
+        uint8_t v2_seg = isV2Const ? constVecPool[v2Base + i] : valuePool[v2Base + i];
+
+        temp = v1_seg;
+        v1Val = v1Val | (temp << (i * vecElemWidth));
+
+        temp = v2_seg;
+        v2Val = v2Val | (temp << (i * vecElemWidth));
+      }
+
+      const auto &opName = op.opName;
+      bool resultIsVec = (opName == VEC_ARITH_ADD) || (opName == VEC_ARITH_SUB) || (opName == VEC_ARITH_MUL);
+
+      uint8_t resultVal = 0;
+      switch (opName) {
+        case VEC_ARITH_ADD: v1 = (v1 + v2) & 0xF; break;
+        case VEC_ARITH_SUB: v1 = (v1 - v2) & 0xF; break;
+        case VEC_ARITH_MUL: v1 = (v1 * v2) & 0xF; break;
+        case VEC_LOGIC_EQ: resultVal = (v1 == v2) ? 1 : 0; break;
+        case VEC_LOGIC_LT: resultVal = (v1 < v2) ? 1 : 0; break;
+        case VEC_LOGIC_LE: resultVal = (v1 <= v2) ? 1 : 0; break;
+      }
+
+      if (resultIsVec) {
+        for (int i = 0; i < vecLength; i++) {
+          uint8_t seg = v1 & 0xF;
+          uint8_t resultId = op.result + i;
+          valuePool[resultId] = seg;
+          v1 = v1 >> 4;
+        }
+      } else {
+        valuePool[resop.result] = resultVal;
+      }
+
+    }
+
+  } else if (magic == MICROPART_MEMREAD_MAGIC) {
+    // Memory read MicroPart
+    uint32_t numOps = second_uint;
+    dataPtr = netlistPtr + (2 * sizeof(uint32_t));
+    
+    if (lane_id < numOps) {
+      auto memReadOps = reinterpret_cast<const toucanGPUSim::CGMicroPartMemRead*>(dataPtr);
+      const auto &op = memReadOps[lane_id];
+      
+      auto enVal = valuePool[op.en];
+      if (enVal != 0) {
+        uint32_t addr = 0;
+        for (size_t j = 0; j < 8; j++) {
+          auto addrFragmentVal = valuePool[op.addrVec + j];
+          addr = addr | (addrFragmentVal << (j * 4));
+        }
+        
+        if (op.hasMultipleWriter) {
+          addr <<= 2;
+        }
+        auto realIndex = op.memBase + addr;
+        auto resultVal = memPool[realIndex];
+        
+        valuePool[op.result] = resultVal;
+      }
+    }
+  } else {
+    // unknow magic number
+    assert(false);
+  }
+}
+
+typedef struct {
+  uint32_t numMParts;
+  SimMicroPartPtrs *mPartInfo;
+} SimMPartLevelInfo;
 
 typedef struct {
   // Private data
   uint8_t *valuePool;
-  size_t valuePoolSize;
-  size_t numConstsInValuePool;
+  uint16_t valuePoolSize;
+  uint16_t numConstsInValuePool;
 
   uint8_t *constVecPool;
 
   char* netlist;
 
   // Top level
-  size_t numOpsL0RegRead;
-  size_t numOpsL0ExgRead;
+  uint32_t numOpsL0RegRead;
 
   // Exec level
   uint32_t numExecLevels;
-  SimExecLevelInfo *execInfo;
+  SimMPartLevelInfo *execMPartLevelInfo;
 
   // Last level
-  size_t numOpsLastExgWrite;
-  size_t numOpsLastRegWrite;
-  size_t numOpsLastMemWrite;
-  size_t numOpsLastPrint;
-  size_t numOpsLastStop;
+  uint32_t numOpsLastRegWrite;
+  uint32_t numOpsLastMemWrite;
+  uint32_t numOpsLastPrint;
+  uint32_t numOpsLastStop;
 
 } SimPartitionPtrs;
 
@@ -126,537 +457,16 @@ __device__ uint32_t realCycles;
 
 __device__ char **printMsgs;
 __device__ SimPartitionPtrs *partitions;
-__device__ uint32_t **partsInRegion;
-__device__ uint32_t *numPartsInRegion;
-__device__ uint32_t numRegions;
+__device__ uint32_t numParts;
 
-uint8_t *regPool_device, *memPool_device, *exchangePool_device;
+uint8_t *regPool_device, *memPool_device;
 
 std::vector<SimPartitionPtrs> gpuPartInfos;
 
 
 extern __shared__ uint8_t sharedMem[];
 
-// every thread group
-__device__ void evalPartL0(
-  uint8_t * __restrict valuePool, 
-  const toucanGPUSim::CGRegReadMetaInfo * __restrict topLevelRegReadOps,
-  const toucanGPUSim::CGExchangeReadMetaInfo * __restrict topLevelExgReadOps,
-  const size_t numRegReads,
-  const size_t numExgReads) {
 
-  auto block = cg::this_thread_block();
-  auto thread_rank = block.thread_rank();
-  auto threads_in_block = block.size();
-
-  // Eval reg reads
-  for (size_t op_pos = thread_rank; op_pos < numRegReads; op_pos += threads_in_block) {
-    // reg read
-    const auto &op = topLevelRegReadOps[op_pos];
-    auto regValId = op.reg;
-    auto resultId = op.result;
-    auto byteCount = op.byteCount;
-
-    if (byteCount != 0) {
-      if (byteCount == 1) {
-        auto regVal = regPool[regValId];
-        valuePool[resultId] = regVal;
-      } else {
-        // multiple bytes
-
-        // assert((byteCount & 0x3) == 0);
-        // assert((regValId & 0x03) == 0);
-        auto intCount = byteCount >> 2;
-
-        for (int i = 0; i < intCount; i++) {
-          size_t regOffset = (regValId >> 2) + i;
-          uint32_t val = reinterpret_cast<uint32_t*>(regPool)[regOffset];
-
-          valuePool[resultId + 3] = val >> 24;
-          valuePool[resultId + 2] = (val >> 16) & 0xf;
-          valuePool[resultId + 1] = (val >> 8) & 0xf;
-          valuePool[resultId] = val & 0xf;
-
-          resultId += 4;
-        }
-      }
-    }
-
-  }
-
-  // Eval exchange reads
-  for (size_t op_pos = thread_rank; op_pos < numExgReads; op_pos += threads_in_block) {
-    const auto &op = topLevelExgReadOps[op_pos];
-    auto exgValId = op.exchangeVal;
-    auto localValId = op.localVal;
-    auto byteCount = op.byteCount;
-
-    if (byteCount != 0) {
-      if (byteCount == 1) {
-        auto exgVal = exchangePool[exgValId];
-        valuePool[localValId] = exgVal;
-      } else {
-        // multiple bytes
-
-        // assert((byteCount & 0x3) == 0);
-        // assert((regValId & 0x03) == 0);
-        auto intCount = byteCount >> 2;
-
-        for (int i = 0; i < intCount; i++) {
-          size_t exgOffset = (exgValId >> 2) + i;
-          uint32_t val = reinterpret_cast<uint32_t*>(exchangePool)[exgOffset];
-
-          valuePool[localValId + 3] = val >> 24;
-          valuePool[localValId + 2] = (val >> 16) & 0xf;
-          valuePool[localValId + 1] = (val >> 8) & 0xf;
-          valuePool[localValId] = val & 0xf;
-
-          localValId += 4;
-        }
-      }
-    }
-
-
-  }
-}
-
-__device__ void evalExecLevels(
-  const uint8_t * __restrict constVecPool,
-  uint8_t * __restrict valuePool, 
-  const toucanGPUSim::CGMemReadMetaInfo * __restrict memReadOps,
-  const toucanGPUSim::CGVecReadMetaInfo * __restrict vecReadOps,
-  const toucanGPUSim::CGLUT1MetaInfo * __restrict lut1Ops,
-  const toucanGPUSim::CGLUT2MetaInfo * __restrict lut2Ops,
-  const toucanGPUSim::CGLUT3MetaInfo * __restrict lut3Ops,
-  const size_t numMemReadOps,
-  const size_t numVecReadOps,
-  const size_t numLUT1Ops,
-  const size_t numLUT2Ops,
-  const size_t numLUT3Ops) {
-
-  auto block = cg::this_thread_block();
-  auto thread_rank = block.thread_rank();
-  auto threads_in_block = block.size();
-
-
-  size_t thread_start_memReads = 0;
-  size_t thread_start_vecReads = thread_start_memReads + getNumPadWithExtraAlignment(numMemReadOps, 32);
-  size_t thread_start_lut1 = thread_start_vecReads + getNumPadWithExtraAlignment(numVecReadOps, 32);
-  size_t thread_start_lut2 = thread_start_lut1 + getNumPadWithExtraAlignment(numLUT1Ops, 32);
-  size_t thread_start_lut3 = thread_start_lut2 + getNumPadWithExtraAlignment(numLUT2Ops, 32);
-  size_t total_work_amount = thread_start_lut3 + getNumPadWithExtraAlignment(numLUT3Ops, 32);
-
-
-  for (size_t exec_pos = thread_rank; exec_pos < total_work_amount; exec_pos += threads_in_block) {
-    if (exec_pos < (thread_start_vecReads)) {
-      auto op_pos = exec_pos - thread_start_memReads;
-      if (op_pos < numMemReadOps) {
-        
-        const auto op = memReadOps[op_pos];
-
-        auto enVal = valuePool[op.en];
-        if (enVal != 0) {
-          auto addrVecId = op.addrVec;
-
-          uint32_t addr = 0;
-          for (size_t i = 0; i < 8; i++) {
-            auto addrFragmentVal = valuePool[addrVecId + i];
-            addr = addr | (addrFragmentVal << (i * 4));
-          }
-
-          // assert(addr <= op.memDepth && "Address exceed memory depth");
-          if (op.hasMultipleWriter) {
-            // assert(addr <= (UINT32_MAX >> 2) && "Memory index too large!");
-            addr <<= 2;
-          }
-          auto realIndex = op.memBase + addr;
-          auto resultVal = memPool[realIndex];
-          
-          valuePool[op.result] = resultVal;
-        } 
-      }
-      continue;
-    }
-
-    if (exec_pos < thread_start_lut1) {
-      auto op_pos = exec_pos - thread_start_vecReads;
-      if (op_pos < (numVecReadOps)) {
-        // vec read
-        const auto op = vecReadOps[op_pos];
-
-        auto isConstVec = op.isConstVec;
-            
-        auto index0Val = static_cast<uint32_t>(valuePool[op.index0]);
-        auto index1Val = static_cast<uint32_t>(valuePool[op.index1]);
-        auto index2Val = static_cast<uint32_t>(valuePool[op.index2]);
-        auto index3Val = static_cast<uint32_t>(valuePool[op.index3]);
-
-        auto outRangeVal = valuePool[op.outRangeValue];
-
-        uint32_t vecOffset = ((index0Val << 12) | (index1Val << 8) | (index2Val << 4) | index3Val) + op.offset;
-
-        uint8_t resultVal = outRangeVal;
-
-        if (vecOffset < op.vecLength) {
-          if (isConstVec) {
-            resultVal = constVecPool[op.vecBase + vecOffset];
-          } else {
-            resultVal = valuePool[op.vecBase + vecOffset];
-          }
-        }
-        valuePool[op.result] = resultVal;
-      }
-      continue;
-    }
-
-    if (exec_pos < thread_start_lut2) {
-      auto op_pos = exec_pos - thread_start_lut1;
-      if (op_pos < numLUT1Ops) {
-        const auto op = lut1Ops[op_pos];
-
-        auto op2Id = op.op2;
-        auto op2Val = valuePool[op2Id];
-
-        uint16_t lutPos = op.lutIndex + op2Val;
-        uint8_t resultVal = lutContent[lutPos];
-
-        auto resultPos = op.result;
-        valuePool[resultPos] = resultVal;
-      }
-      continue;
-    }
-
-    if (exec_pos < thread_start_lut3) {
-      auto op_pos = exec_pos - thread_start_lut2;
-      if (op_pos < numLUT2Ops) {
-        const auto op = lut2Ops[op_pos];
-
-        auto op1Id = op.op1;
-        auto op2Id = op.op2;
-
-        auto op1Val = valuePool[op1Id];
-        auto op2Val = valuePool[op2Id];
-
-        uint16_t lutPos = op.lutIndex + ((op1Val << 4) | op2Val);
-        uint8_t resultVal = lutContent[lutPos];
-
-        auto resultPos = op.result;
-        valuePool[resultPos] = resultVal;
-      }
-      continue;
-    }
-
-    // else: lut3
-    auto op_pos = exec_pos - thread_start_lut3;
-    if (op_pos < numLUT3Ops) {
-      const auto op = lut3Ops[op_pos];
-
-      auto op0Id = op.op0;
-      auto op1Id = op.op1;
-      auto op2Id = op.op2;
-
-      auto op0Val = valuePool[op0Id];
-      auto op1Val = valuePool[op1Id];
-      auto op2Val = valuePool[op2Id];
-
-      uint16_t lutPos = op.lutIndex + ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
-      uint8_t resultVal = lutContent[lutPos];
-
-      auto resultPos = op.result;
-      valuePool[resultPos] = resultVal;
-    }
-  }
-
-
-
-}
-
-__device__ void evalLastLevel(
-  uint8_t * __restrict valuePool, 
-  const toucanGPUSim::CGExchangeWriteMetaInfo * __restrict exgWriteOps,
-  const toucanGPUSim::CGRegWriteMetaInfo * __restrict regWriteOps,
-  const toucanGPUSim::CGMemWriteMetaInfo * __restrict memWriteOps,
-  const toucanGPUSim::CGPrintMetaInfo * __restrict printOps,
-  const toucanGPUSim::CGStopMetaInfo * __restrict stopOps,
-  const size_t numExgWriteOps,
-  const size_t numRegWriteOps,
-  const size_t numMemWriteOps,
-  const size_t numPrintOps,
-  const size_t numStopOps) {
-
-  auto block = cg::this_thread_block();
-  auto thread_rank = block.thread_rank();
-  auto threads_in_block = block.size();
-
-  assert(numRegWriteOps <= 1 && "Only support single reg write in last level");
-  if (numRegWriteOps != 0){
-    const auto &op = regWriteOps[0];
-
-#ifdef REG_WRITE_USE_ASYNC_MEMCPY
-    size_t bytesToCopy = (op.count + 16) & 0xFFFFFFF0;
-
-    // cg::memcpy_async(block, valuePool + op.dat, regPool + op.reg, cuda::aligned_size_t<16>(bytesToCopy));
-    cg::memcpy_async(block, valuePool + op.dat, regPool + op.reg, bytesToCopy);
-#else
-    size_t intsToCopy = (op.count + 3) / 4;
-    for (size_t i = thread_rank; i < intsToCopy; i += threads_in_block) {
-      size_t poolOffset = (op.dat >> 2) + i;
-      auto val = reinterpret_cast<uint32_t*>(valuePool)[poolOffset];
-
-      size_t regOffset = (op.reg >> 2) + i;
-      reinterpret_cast<uint32_t*>(regPool)[regOffset] = val;
-    }
-#endif
-  }
-
-  assert(numExgWriteOps <= 1 && "Only support single exchange write in last level");
-  if (numExgWriteOps != 0) {
-    const auto &op = exgWriteOps[0];
-
-    size_t intsToCopy = (op.count + 3) / 4;
-    for (size_t i = thread_rank; i < intsToCopy; i += threads_in_block) {
-      size_t poolOffset = (op.localVal >> 2) + i;
-      auto val = reinterpret_cast<uint32_t*>(valuePool)[poolOffset];
-
-      size_t exchangeOffset = (op.exchangeVal >> 2) + i;
-      reinterpret_cast<uint32_t*>(exchangePool)[exchangeOffset] = val;
-    }
-  }
-
-
-  for (size_t op_pos = thread_rank; op_pos < numMemWriteOps; op_pos += threads_in_block) {
-    const auto op = memWriteOps[op_pos];
-
-    // memwrite
-    auto enVal = valuePool[op.en];
-    if (enVal != 0) {
-      auto datVal = valuePool[op.dat];
-      auto addrVecId = op.addrVec;
-
-      uint32_t addr = 0;
-      for (size_t i = 0; i < 8; i++) {
-        auto addrFragmentVal = valuePool[addrVecId + i];
-        addr = addr | (addrFragmentVal << (i * 4));
-      }
-      // assert(addr <= op.memDepth && "Address exceed memory depth");
-      if (op.hasMultipleWriter) {
-        // assert(addr <= (UINT32_MAX >> 2));
-        addr <<= 2;
-      }
-      auto realIndex = op.memBase + addr;
-      memPool[realIndex] = datVal;
-    }
-  }
-
-
-  for (size_t op_pos = thread_rank; op_pos < numPrintOps; op_pos += threads_in_block) {
-    const auto op = printOps[op_pos];
-    auto enVal = valuePool[op.en];
-    if (enablePrint && enVal != 0) {
-      auto msgPtr = printMsgs[op.msg];
-      printf("%s", msgPtr);
-    }
-  }
-
-  for (size_t op_pos = thread_rank; op_pos < numStopOps; op_pos += threads_in_block) {
-    const auto op = stopOps[op_pos];
-
-    // stop
-    auto enVal = valuePool[op.en];
-    if (enVal != 0) {
-      shouldStop = true;
-    }
-  }
-
-#ifdef REG_WRITE_USE_ASYNC_MEMCPY
-  __threadfence();
-  cg::wait(block); // Wait for all copies to complete
-#endif
-
-}
-
-// Note: launch in 1D
-__device__ void evalEachPartition(size_t partId) {
-  auto &partPtrs = partitions[partId];
-
-  auto block = cg::this_thread_block();
-  auto thread_rank = block.thread_rank();
-  auto threads_in_block = block.size();
-
-  uint8_t *localValuePool = reinterpret_cast<uint8_t*>(sharedMem);
-  // load consts
-  for (size_t data_pos = thread_rank; data_pos < partPtrs.numConstsInValuePool; data_pos += threads_in_block) {
-    localValuePool[data_pos] = partPtrs.valuePool[data_pos];
-  }
-
-  auto netlist_ptr = partPtrs.netlist;
-  // char* netlist_eval_start;
-
-  auto netlist_exgRead = align_pointer(netlist_ptr);
-  auto netlist_regRead = align_pointer(netlist_ptr + (partPtrs.numOpsL0ExgRead * sizeof(toucanGPUSim::CGExchangeReadMetaInfo)));
-
-  evalPartL0(localValuePool, 
-  reinterpret_cast<const toucanGPUSim::CGRegReadMetaInfo*>(netlist_regRead), 
-  reinterpret_cast<const toucanGPUSim::CGExchangeReadMetaInfo*>(netlist_exgRead), 
-  partPtrs.numOpsL0RegRead, partPtrs.numOpsL0ExgRead);
-  __syncthreads();
-
-  auto netlist_eval_start = netlist_regRead + (partPtrs.numOpsL0RegRead * sizeof(toucanGPUSim::CGRegReadMetaInfo));
-
-  for (size_t exec_level_id = 0; exec_level_id < partPtrs.numExecLevels; exec_level_id++) {
-    const auto num_memRead = partPtrs.execInfo[exec_level_id].numMemRead;
-    const auto num_vecRead = partPtrs.execInfo[exec_level_id].numVecRead;
-    const auto num_lut1 = partPtrs.execInfo[exec_level_id].numLUT1;
-    const auto num_lut2 = partPtrs.execInfo[exec_level_id].numLUT2;
-    const auto num_lut3 = partPtrs.execInfo[exec_level_id].numLUT3;
-
-    auto netlist_memRead = align_pointer(netlist_eval_start);
-    auto netlist_vecRead = align_pointer(netlist_memRead + (num_memRead * sizeof(toucanGPUSim::CGMemReadMetaInfo)));
-    auto netlist_lut1 = align_pointer(netlist_vecRead + (num_vecRead * sizeof(toucanGPUSim::CGVecReadMetaInfo)));
-    auto netlist_lut2 = align_pointer(netlist_lut1 + (num_lut1 * sizeof(toucanGPUSim::CGLUT1MetaInfo)));
-    auto netlist_lut3 = align_pointer(netlist_lut2 + (num_lut2 * sizeof(toucanGPUSim::CGLUT2MetaInfo)));
-    evalExecLevels(
-      partPtrs.constVecPool,
-      localValuePool, 
-      reinterpret_cast<const toucanGPUSim::CGMemReadMetaInfo*>(netlist_memRead),
-      reinterpret_cast<const toucanGPUSim::CGVecReadMetaInfo*>(netlist_vecRead), 
-      reinterpret_cast<const toucanGPUSim::CGLUT1MetaInfo*>(netlist_lut1), 
-      reinterpret_cast<const toucanGPUSim::CGLUT2MetaInfo*>(netlist_lut2), 
-      reinterpret_cast<const toucanGPUSim::CGLUT3MetaInfo*>(netlist_lut3), 
-      num_memRead, 
-      num_vecRead, 
-      num_lut1, num_lut2, num_lut3);
-    netlist_eval_start = align_pointer(netlist_lut3 + (num_lut3 * sizeof(toucanGPUSim::CGLUT3MetaInfo)));
-
-    __syncthreads();
-  }
-
-  auto num_exgWrite = partPtrs.numOpsLastExgWrite;
-  auto num_regWrite = partPtrs.numOpsLastRegWrite;
-  auto num_memWrite = partPtrs.numOpsLastMemWrite;
-  auto num_print = partPtrs.numOpsLastPrint;
-  auto num_stop = partPtrs.numOpsLastStop;
-
-  auto netlist_exgWrite = align_pointer(netlist_eval_start);
-  auto netlist_regWrite = align_pointer(netlist_exgWrite + (num_exgWrite * sizeof(toucanGPUSim::CGExchangeWriteMetaInfo)));
-  auto netlist_memWrite = align_pointer(netlist_regWrite + (num_regWrite * sizeof(toucanGPUSim::CGRegWriteMetaInfo)));
-  auto netlist_print = align_pointer(netlist_memWrite + (num_memWrite * sizeof(toucanGPUSim::CGMemWriteMetaInfo)));
-  auto netlist_stop = align_pointer(netlist_print + (num_print * sizeof(toucanGPUSim::CGPrintMetaInfo)));
-
-  evalLastLevel(
-    localValuePool, 
-    reinterpret_cast<const toucanGPUSim::CGExchangeWriteMetaInfo*>(netlist_exgWrite), 
-    reinterpret_cast<const toucanGPUSim::CGRegWriteMetaInfo*>(netlist_regWrite), 
-    reinterpret_cast<const toucanGPUSim::CGMemWriteMetaInfo*>(netlist_memWrite), 
-    reinterpret_cast<const toucanGPUSim::CGPrintMetaInfo*>(netlist_print), 
-    reinterpret_cast<const toucanGPUSim::CGStopMetaInfo*>(netlist_stop), 
-    num_exgWrite, 
-    num_regWrite, 
-    num_memWrite, 
-    num_print, 
-    num_stop);
-
-}
-
-
-__device__ void evalEachRegion(
-  const uint32_t * __restrict partIdsInCurrentRegion,
-  const size_t numPartsInCurrentRegion
-) {
-  size_t block_rank = blockIdx.x;
-  size_t blocks_in_grid = blockDim.x;
-
-  for (size_t exec_pos = 0; exec_pos < numPartsInCurrentRegion; exec_pos += blocks_in_grid) {
-    size_t block_pos = exec_pos + block_rank;
-    if (block_pos < numPartsInCurrentRegion) {
-      auto partId = partIdsInCurrentRegion[block_pos];
-      evalEachPartition(partId);
-    }
-  }
-}
-
-__global__ void evalSingleCycle() {
-  // use cooperative group
-  auto grid = cg::this_grid();
-
-  for (size_t regionId = 0; regionId < numRegions; regionId++) {
-    uint32_t * partIdsInCurrentRegion = partsInRegion[regionId];
-    uint32_t numPartsInCurrentRegion = numPartsInRegion[regionId];
-    assert(numPartsInCurrentRegion != 0);
-    evalEachRegion(partIdsInCurrentRegion, numPartsInCurrentRegion);
-    __threadfence();
-    grid.sync();
-  }
-}
-
-__global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
-  auto grid = cg::this_grid();
-
-  for (size_t cycle = 0; cycle < cycleCnt; cycle++) {
-    for (size_t regionId = 0; regionId < numRegions; regionId++) {
-      uint32_t * partIdsInCurrentRegion = partsInRegion[regionId];
-      uint32_t numPartsInCurrentRegion = numPartsInRegion[regionId];
-      evalEachRegion(partIdsInCurrentRegion, numPartsInCurrentRegion);
-      __threadfence();
-      grid.sync();
-    }
-    if (shouldStop) {
-      auto thread_rank = grid.thread_rank();
-      if (thread_rank == 0) {
-        realCycles = cycle + 1;
-      }
-      return;
-    }
-  }
-
-  // update cycle counter
-  auto thread_rank = grid.thread_rank();
-  if (thread_rank == 0) {
-    realCycles = cycleCnt;
-  }
-}
-
-uint64_t read_reg_from_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalLocs) {
-  uint64_t result = 0;
-
-  for(auto it = signalLocs.begin(); it != signalLocs.end(); ++it) {
-    auto pos = std::get<0>(*it);
-    // TODO: Use async copy to speedup
-    uint8_t valFragment;
-    gpuErrchk(cudaMemcpy(&valFragment, regPool_device + pos, 1, cudaMemcpyDeviceToHost));
-    assert(valFragment <= 0xF);
-    result = (result << 4) | valFragment;
-  }
-  return result;
-}
-
-
-void write_reg_to_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalLocs, uint64_t signalValue) {
-  for(auto rit = signalLocs.rbegin(); rit != signalLocs.rend(); ++rit) {
-    auto pos = std::get<0>(*rit);
-    uint8_t valFragment = signalValue & 0xF;
-    gpuErrchk(cudaMemcpyAsync(regPool_device + pos, &valFragment, 1, cudaMemcpyHostToDevice));
-    signalValue = signalValue >> 4;
-  }
-  gpuErrchk(cudaDeviceSynchronize());
-  assert(signalValue == 0 && "Given value is wider than register");
-}
-
-bool get_eval_done() {
-  bool ret = false;
-  cudaMemcpyFromSymbol(&ret, shouldStop, 1);
-  return ret;
-}
-
-uint32_t get_real_cycles() {
-  uint32_t ret;
-  cudaMemcpyFromSymbol(&ret, realCycles, sizeof(uint32_t));
-  return ret;
-}
-
-void setEnablePrint(bool print_en) {
-  cudaMemcpyToSymbol(enablePrint, &print_en, 1);
-}
 
 template <typename T>
 static void allocAndCopyVector(T **devicePtr, const void *data, const size_t size) {
@@ -672,16 +482,13 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
   // copy regs and mem
   assert(design.regPool.size() == design.regPoolSize && "Reg pool should be initialized!");
   assert(design.memPool.size() == design.memPoolSize && "Mem pool should be initialized!");
-  assert(design.exchangePool.size() == design.exchangePoolSize && "Exchange pool should be initialized!");
+
 
   allocAndCopyVector(&regPool_device, design.regPool.data(), design.regPoolSize);
   allocAndCopyVector(&memPool_device, design.memPool.data(), design.memPoolSize);
-  allocAndCopyVector(&exchangePool_device, design.exchangePool.data(), design.exchangePoolSize);
-  
+
   cudaMemcpyToSymbol(regPool, &regPool_device, sizeof(uint8_t*));
   cudaMemcpyToSymbol(memPool, &memPool_device, sizeof(uint8_t*));
-  cudaMemcpyToSymbol(exchangePool, &exchangePool_device, sizeof(uint8_t*));
-  
 
 
   // copy each partitions
@@ -702,7 +509,7 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     assert(eachPart.valuePool.size() == eachPart.valuePoolSize);
     allocAndCopyVector(&(partInfo.valuePool), eachPart.valuePool.data(), eachPart.valuePoolSize);
     partInfo.valuePoolSize = eachPart.valuePoolSize;
-    assert(partInfo.valuePoolSize <= UINT16_MAX);
+    assert(eachPart.valuePoolSize <= UINT16_MAX);
     partInfo.numConstsInValuePool = eachPart.numConstsInValuePool;
 
     // copy const vec pool
@@ -715,31 +522,21 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     // copy operations
 
     // ops_l0
-    partInfo.numOpsL0ExgRead = eachPart.ops_l0_exgRead.size();
     partInfo.numOpsL0RegRead = eachPart.ops_l0_regRead.size();
-    assert((partInfo.numOpsL0ExgRead == 0) || (partInfo.numOpsL0RegRead == 0));
-
-    if (partInfo.numOpsL0ExgRead != 0) {
-      size_t memSize = eachPart.ops_l0_exgRead.size() * sizeof(toucanGPUSim::CGExchangeReadMetaInfo);
-      appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_l0_exgRead.data()), memSize);
-    }
-
+    assert((partInfo.numOpsL0RegRead == 0));
     if (partInfo.numOpsL0RegRead != 0) {
       size_t memSize = eachPart.ops_l0_regRead.size() * sizeof(toucanGPUSim::CGRegReadMetaInfo);
       appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_l0_regRead.data()), memSize);
     }
 
 
-    // middle level ops
-    std::vector<SimExecLevelInfo> level_size_info;
+    // middle level mparts
+    std::vector<SimMPartLevelInfo> level_mpart_info;
 
-    size_t numExecLevels = eachPart.ops_exec_memRead.size();
-    assert(eachPart.ops_exec_vecRead.size() == numExecLevels);
-    assert(eachPart.ops_exec_lut1.size() == numExecLevels);
-    assert(eachPart.ops_exec_lut2.size() == numExecLevels);
-    assert(eachPart.ops_exec_lut3.size() == numExecLevels);
+    size_t numExecLevels = eachPart.exec_mParts.size();
 
-    for (size_t level_id = 0; level_id < eachPart.ops_exec_memRead.size(); level_id++) {
+    for (size_t level_id = 0; level_id < numExecLevels; level_id++) {
+      // TBD
       const auto &part_memRead = eachPart.ops_exec_memRead[level_id];
       const auto &part_vecRead = eachPart.ops_exec_vecRead[level_id];
       const auto &part_lut1 = eachPart.ops_exec_lut1[level_id];
@@ -841,6 +638,7 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
   }
 
   // setup numRegions and partsInRegion
+  assert(design.regionPartitionIds.size() == 1 && "For now only supports 1 region");
   std::vector<uint32_t*> partsInRegion_device;
   std::vector<uint32_t> numParts;
   size_t _partId = 0;
@@ -885,6 +683,3 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
 
   gpuErrchk(cudaDeviceSynchronize());
 }
-
-
-
