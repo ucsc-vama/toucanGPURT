@@ -193,8 +193,8 @@ __device__ void evalSingleMicroPart(
       auto op1 = op.op1;
       auto op2 = op.op2;
       auto op0Val = (op0 < 16) ? op0 : valuePool[op0];
-      auto op1Val = (op0 < 16) ? op0 : valuePool[op0]; 
-      auto op2Val = (op0 < 16) ? op0 : valuePool[op0];
+      auto op1Val = (op1 < 16) ? op1 : valuePool[op1];
+      auto op2Val = (op2 < 16) ? op2 : valuePool[op2];
       
       uint16_t lutPos = op.lutIndex + ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
       uint8_t resultVal = lutContent[lutPos];
@@ -291,7 +291,7 @@ __device__ void evalSingleMicroPart(
   } else if (magic == MICROPART_VECREAD_MAGIC) {
     // Vector read MicroPart
     uint32_t numOps = second_uint;
-    dataPtr = netlistPtr + (2 * sizeof(uint32_t));
+    char *dataPtr = netlistPtr + (2 * sizeof(uint32_t));
     
     if (lane_id < numOps) {
       auto vecReadOps = reinterpret_cast<const toucanGPUSim::CGMicroPartVecRead*>(dataPtr);
@@ -308,7 +308,7 @@ __device__ void evalSingleMicroPart(
       
       uint8_t resultVal;
 
-      if (vecOffset < vecLength) {
+      if (vecOffset < op.vecLength) {
         if (op.isConstVec) {
           resultVal = constVecPool[op.vecBase + vecOffset];
         } else {
@@ -324,7 +324,7 @@ __device__ void evalSingleMicroPart(
   } else if (magic == MICROPART_VECOP_MAGIC) {
     // Vector arithmetic/logic MicroPart
     uint32_t numOps = second_uint;
-    dataPtr = netlistPtr + (2 * sizeof(uint32_t));
+    char *dataPtr = netlistPtr + (2 * sizeof(uint32_t));
     
     if (lane_id < numOps) {
       auto vecOpOps = reinterpret_cast<const toucanGPUSim::CGMicroPartVecArithOrLogic*>(dataPtr);
@@ -362,24 +362,25 @@ __device__ void evalSingleMicroPart(
       bool resultIsVec = (opName == VEC_ARITH_ADD) || (opName == VEC_ARITH_SUB) || (opName == VEC_ARITH_MUL);
 
       uint8_t resultVal = 0;
+      __int128 v1Result = v1Val;
       switch (opName) {
-        case VEC_ARITH_ADD: v1 = (v1 + v2) & 0xF; break;
-        case VEC_ARITH_SUB: v1 = (v1 - v2) & 0xF; break;
-        case VEC_ARITH_MUL: v1 = (v1 * v2) & 0xF; break;
-        case VEC_LOGIC_EQ: resultVal = (v1 == v2) ? 1 : 0; break;
-        case VEC_LOGIC_LT: resultVal = (v1 < v2) ? 1 : 0; break;
-        case VEC_LOGIC_LE: resultVal = (v1 <= v2) ? 1 : 0; break;
+        case VEC_ARITH_ADD: v1Result = (v1Val + v2Val); break;
+        case VEC_ARITH_SUB: v1Result = (v1Val - v2Val); break;
+        case VEC_ARITH_MUL: v1Result = (v1Val * v2Val); break;
+        case VEC_LOGIC_EQ: resultVal = (v1Val == v2Val) ? 1 : 0; break;
+        case VEC_LOGIC_LT: resultVal = (v1Val < v2Val) ? 1 : 0; break;
+        case VEC_LOGIC_LE: resultVal = (v1Val <= v2Val) ? 1 : 0; break;
       }
 
       if (resultIsVec) {
         for (int i = 0; i < vecLength; i++) {
-          uint8_t seg = v1 & 0xF;
-          uint8_t resultId = op.result + i;
+          uint8_t seg = v1Result & 0xF;
+          uint16_t resultId = op.result + i;
           valuePool[resultId] = seg;
-          v1 = v1 >> 4;
+          v1Result = v1Result >> 4;
         }
       } else {
-        valuePool[resop.result] = resultVal;
+        valuePool[op.result] = resultVal;
       }
 
     }
@@ -387,7 +388,7 @@ __device__ void evalSingleMicroPart(
   } else if (magic == MICROPART_MEMREAD_MAGIC) {
     // Memory read MicroPart
     uint32_t numOps = second_uint;
-    dataPtr = netlistPtr + (2 * sizeof(uint32_t));
+    char *dataPtr = netlistPtr + (2 * sizeof(uint32_t));
     
     if (lane_id < numOps) {
       auto memReadOps = reinterpret_cast<const toucanGPUSim::CGMicroPartMemRead*>(dataPtr);
@@ -417,6 +418,11 @@ __device__ void evalSingleMicroPart(
 }
 
 typedef struct {
+  char* netlistPtr;
+  size_t netlistSize;
+} SimMicroPartPtrs;
+
+typedef struct {
   uint32_t numMParts;
   SimMicroPartPtrs *mPartInfo;
 } SimMPartLevelInfo;
@@ -425,7 +431,6 @@ typedef struct {
   // Private data
   uint8_t *valuePool;
   uint16_t valuePoolSize;
-  uint16_t numConstsInValuePool;
 
   uint8_t *constVecPool;
 
@@ -510,7 +515,6 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     allocAndCopyVector(&(partInfo.valuePool), eachPart.valuePool.data(), eachPart.valuePoolSize);
     partInfo.valuePoolSize = eachPart.valuePoolSize;
     assert(eachPart.valuePoolSize <= UINT16_MAX);
-    partInfo.numConstsInValuePool = eachPart.numConstsInValuePool;
 
     // copy const vec pool
     if (eachPart.constVecPool.empty()) {
@@ -530,84 +534,65 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     }
 
 
-    // middle level mparts
+    // middle level mparts - serialize MicroParts
     std::vector<SimMPartLevelInfo> level_mpart_info;
 
     size_t numExecLevels = eachPart.exec_mParts.size();
 
     for (size_t level_id = 0; level_id < numExecLevels; level_id++) {
-      // TBD
-      const auto &part_memRead = eachPart.ops_exec_memRead[level_id];
-      const auto &part_vecRead = eachPart.ops_exec_vecRead[level_id];
-      const auto &part_lut1 = eachPart.ops_exec_lut1[level_id];
-      const auto &part_lut2 = eachPart.ops_exec_lut2[level_id];
-      const auto &part_lut3 = eachPart.ops_exec_lut3[level_id];
+      const auto &mPartsInLevel = eachPart.exec_mParts[level_id];
 
-      SimExecLevelInfo level_info;
-      level_info.numMemRead = part_memRead.size();
-      level_info.numVecRead = part_vecRead.size();
-      level_info.numLUT1 = part_lut1.size();
-      level_info.numLUT2 = part_lut2.size();
-      level_info.numLUT3 = part_lut3.size();
-      level_size_info.push_back(level_info);
+      SimMPartLevelInfo levelInfo;
+      levelInfo.numMParts = mPartsInLevel.size();
 
-      if (!part_memRead.empty()) {
-        size_t memSize = part_memRead.size() * sizeof(toucanGPUSim::CGMemReadMetaInfo);
-        appendToNetlistVec(reinterpret_cast<const char*>(part_memRead.data()), memSize);
+      // Create array of MicroPart pointers for this level
+      std::vector<SimMicroPartPtrs> mPartPtrs;
+
+      for (const auto &mPart : mPartsInLevel) {
+        // Serialize each MicroPart
+        std::vector<char> mPartNetlist;
+        copyMicroPartToNetlist(mPart, mPartNetlist);
+
+        // Allocate GPU memory for this MicroPart's netlist
+        char* mPartNetlistPtr;
+        allocAndCopyVector(&mPartNetlistPtr, mPartNetlist.data(), mPartNetlist.size());
+
+        SimMicroPartPtrs mPartPtr;
+        mPartPtr.netlistPtr = mPartNetlistPtr;
+        mPartPtr.netlistSize = mPartNetlist.size();
+
+        mPartPtrs.push_back(mPartPtr);
       }
 
-      if (!part_vecRead.empty()) {
-        toucanGPUSim::CGVecReadMetaInfo *op_ptr;
-        size_t memSize = part_vecRead.size() * sizeof(toucanGPUSim::CGVecReadMetaInfo);
-        allocAndCopyVector(&op_ptr, part_vecRead.data(), memSize);
-        appendToNetlistVec(reinterpret_cast<const char*>(part_vecRead.data()), memSize);
+      // Allocate GPU memory for the array of MicroPart pointers
+      if (!mPartPtrs.empty()) {
+        allocAndCopyVector(&(levelInfo.mPartInfo), mPartPtrs.data(), mPartPtrs.size() * sizeof(SimMicroPartPtrs));
+      } else {
+        levelInfo.mPartInfo = nullptr;
       }
 
-      if (!part_lut1.empty()) {
-        size_t memSize = part_lut1.size() * sizeof(toucanGPUSim::CGLUT1MetaInfo);
-        appendToNetlistVec(reinterpret_cast<const char*>(part_lut1.data()), memSize);
-      }
-
-      if (!part_lut2.empty()) {
-        size_t memSize = part_lut2.size() * sizeof(toucanGPUSim::CGLUT2MetaInfo);
-        appendToNetlistVec(reinterpret_cast<const char*>(part_lut2.data()), memSize);
-      }
-
-      if (!part_lut3.empty()) {
-        size_t memSize = part_lut3.size() * sizeof(toucanGPUSim::CGLUT3MetaInfo);
-        appendToNetlistVec(reinterpret_cast<const char*>(part_lut3.data()), memSize);
-      }
+      level_mpart_info.push_back(levelInfo);
     }
 
     partInfo.numExecLevels = numExecLevels;
 
     if (numExecLevels != 0) {
-      size_t memSize = 0;
-
-      // memRead counts
-      memSize = level_size_info.size() * sizeof(SimExecLevelInfo);
-      allocAndCopyVector(&(partInfo.execInfo), level_size_info.data(), memSize);
+      size_t memSize = level_mpart_info.size() * sizeof(SimMPartLevelInfo);
+      allocAndCopyVector(&(partInfo.execMPartLevelInfo), level_mpart_info.data(), memSize);
     } else {
       // no exec levels
-      partInfo.execInfo = nullptr;
+      partInfo.execMPartLevelInfo = nullptr;
     }
 
-    // last level
-    partInfo.numOpsLastExgWrite = eachPart.ops_last_exgWrite.size();
-    partInfo.numOpsLastRegWrite = eachPart.ops_last_regWrite.size();
+    // last level - handle single regWrite and multiple other operations
+    partInfo.numOpsLastRegWrite = 1; // Always 1 for op_last_regWrite
     partInfo.numOpsLastMemWrite = eachPart.ops_last_memWrite.size();
     partInfo.numOpsLastPrint = eachPart.ops_last_print.size();
     partInfo.numOpsLastStop = eachPart.ops_last_stop.size();
 
-    if (partInfo.numOpsLastExgWrite != 0) {
-      size_t memSize = eachPart.ops_last_exgWrite.size() * sizeof(toucanGPUSim::CGExchangeWriteMetaInfo);
-      appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_last_exgWrite.data()), memSize);
-    }
-
-    if (partInfo.numOpsLastRegWrite != 0) {
-      size_t memSize = eachPart.ops_last_regWrite.size() * sizeof(toucanGPUSim::CGRegWriteMetaInfo);
-      appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_last_regWrite.data()), memSize);
-    }
+    // Serialize single regWrite operation
+    size_t memSize = sizeof(toucanGPUSim::CGRegWriteMetaInfo);
+    appendToNetlistVec(reinterpret_cast<const char*>(&eachPart.op_last_regWrite), memSize);
 
     if (partInfo.numOpsLastMemWrite != 0) {
       size_t memSize = eachPart.ops_last_memWrite.size() * sizeof(toucanGPUSim::CGMemWriteMetaInfo);
