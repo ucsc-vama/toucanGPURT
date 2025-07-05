@@ -418,7 +418,7 @@ __device__ void evalSingleMicroPart(
 }
 
 typedef struct {
-  char* netlistPtr;
+  size_t netlistOffset;
   size_t netlistSize;
 } SimMicroPartPtrs;
 
@@ -549,16 +549,18 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
       std::vector<SimMicroPartPtrs> mPartPtrs;
 
       for (const auto &mPart : mPartsInLevel) {
-        // Serialize each MicroPart
+        // Serialize each MicroPart and append to allNetlist for locality
         std::vector<char> mPartNetlist;
         copyMicroPartToNetlist(mPart, mPartNetlist);
 
-        // Allocate GPU memory for this MicroPart's netlist
-        char* mPartNetlistPtr;
-        allocAndCopyVector(&mPartNetlistPtr, mPartNetlist.data(), mPartNetlist.size());
+        // Record the offset in allNetlist where this MicroPart starts
+        size_t mPartOffset = allNetlist.size();
+
+        // Append MicroPart netlist to the main netlist buffer
+        appendToNetlistVec(mPartNetlist.data(), mPartNetlist.size());
 
         SimMicroPartPtrs mPartPtr;
-        mPartPtr.netlistPtr = mPartNetlistPtr;
+        mPartPtr.netlistOffset = mPartOffset;
         mPartPtr.netlistSize = mPartNetlist.size();
 
         mPartPtrs.push_back(mPartPtr);
