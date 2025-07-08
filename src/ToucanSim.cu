@@ -270,4 +270,6 @@ uint64_t ToucanSimulator::readSignal(const std::string &signalName) {
   // return ToucanSimulator::getSmallSignalValue(signalLocs);
 }
 
-
+void ToucanSimulator::cleanup() {
+  // TODO: release resources
+}

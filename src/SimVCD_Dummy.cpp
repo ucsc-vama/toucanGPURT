@@ -22,6 +22,3 @@ void ToucanSimulator::dumpVcdWorker(uint64_t cycle) {
   return;
 }
 
-void ToucanSimulator::cleanup() {
-  return;
-}
