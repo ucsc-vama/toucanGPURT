@@ -261,8 +261,13 @@ __device__ void evalSingleMicroPart(
       auto op1Val = (op1 < 16) ? op1 : valuePool[op1];
       auto op2Val = (op2 < 16) ? op2 : valuePool[op2];
       
-      uint16_t lutPos = op.lutIndex + ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
-      uint8_t resultVal = lutContent[lutPos];
+      uint8_t resultVal;
+      if (lutIndex == LUT_NOP_INDEX) {
+        resultVal = op2Val;
+      } else {
+        uint16_t lutPos = op.lutIndex() + ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
+        resultVal = lutContent[lutPos];
+      }
 
       thisLaneShuffleVal = resultVal;
     }
