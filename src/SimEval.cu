@@ -265,7 +265,7 @@ __device__ void evalSingleMicroPart(
       if (lutIndex == LUT_NOP_INDEX) {
         resultVal = op2Val;
       } else {
-        uint16_t lutPos = op.lutIndex() + ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
+        uint16_t lutPos = lutIndex+ ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
         resultVal = lutContent[lutPos];
       }
 
@@ -320,7 +320,7 @@ __device__ void evalSingleMicroPart(
       if (lutIndex == LUT_NOP_INDEX) {
         resultVal = op2Val;
       } else {
-        uint16_t lutPos = op.lutIndex() + ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
+        uint16_t lutPos = lutIndex + ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
         resultVal = lutContent[lutPos];
       }
       
