@@ -148,6 +148,70 @@ void copyMicroPartToNetlist(const toucanGPUSim::CGMicroPartInfo &mPart, std::vec
 
 
 
+typedef struct {
+  size_t netlistOffset;
+  size_t netlistSize;
+} SimMicroPartPtrs;
+
+typedef struct {
+  uint32_t numMParts;
+  SimMicroPartPtrs *mPartInfo;
+} SimMPartLevelInfo;
+
+typedef struct {
+  // Private data
+  uint8_t *valuePool;
+  uint16_t valuePoolSize;
+
+  uint8_t *constVecPool;
+
+  char* netlist;
+  char* lastLevelNetlistPtr; // Direct pointer to last level operations
+
+  // Top level
+  uint32_t numOpsL0RegRead;
+
+  // Exec level
+  uint32_t numExecLevels;
+  SimMPartLevelInfo *execMPartLevelInfo;
+
+  // Last level
+  uint32_t numOpsLastRegWrite;
+  uint32_t numOpsLastMemWrite;
+  uint32_t numOpsLastPrint;
+  uint32_t numOpsLastStop;
+
+} SimPartitionPtrs;
+
+
+__constant__ uint8_t lutContent[LUT_SIZE];
+
+__device__ uint8_t *regPool, *memPool;
+
+__device__ bool shouldStop = false;
+__device__ bool enablePrint = false;
+__device__ uint32_t realCycles;
+
+__device__ char **printMsgs;
+__device__ SimPartitionPtrs *partitions;
+
+__device__ uint32_t *numPartsInRegion;
+__device__ uint32_t numRegions;
+__device__ uint32_t **partsInRegion;
+
+uint8_t *regPool_device, *memPool_device;
+
+std::vector<SimPartitionPtrs> gpuPartInfos;
+
+
+extern __shared__ uint8_t sharedMem[];
+
+
+
+
+
+
+
 
 // Device function to evaluate a single MicroPart
 // Each MicroPart should be evaluated by a single GPU thread warp
@@ -181,6 +245,7 @@ __device__ void evalSingleMicroPart(
     
     // Process operations sequentially through levels
     char *currentPtr = dataPtr;
+    // TODO: if fail consider change this to int
     uint8_t thisLaneShuffleVal = 0;
     
     // 1. Process top level operations (each thread handles one operation)
@@ -417,59 +482,286 @@ __device__ void evalSingleMicroPart(
   }
 }
 
-typedef struct {
-  size_t netlistOffset;
-  size_t netlistSize;
-} SimMicroPartPtrs;
+__device__ void evalPartL0(
+  uint8_t * __restrict valuePool, 
+  const toucanGPUSim::CGRegReadMetaInfo * __restrict topLevelRegReadOps,
+  const size_t numRegReads) {
 
-typedef struct {
-  uint32_t numMParts;
-  SimMicroPartPtrs *mPartInfo;
-} SimMPartLevelInfo;
+  auto block = cg::this_thread_block();
+  auto thread_rank = block.thread_rank();
+  auto threads_in_block = block.size();
 
-typedef struct {
-  // Private data
-  uint8_t *valuePool;
-  uint16_t valuePoolSize;
+  // Eval reg reads
+  for (size_t op_pos = thread_rank; op_pos < numRegReads; op_pos += threads_in_block) {
+    // reg read
+    const auto &op = topLevelRegReadOps[op_pos];
+    auto regValId = op.reg;
+    auto resultId = op.result;
 
-  uint8_t *constVecPool;
-
-  char* netlist;
-
-  // Top level
-  uint32_t numOpsL0RegRead;
-
-  // Exec level
-  uint32_t numExecLevels;
-  SimMPartLevelInfo *execMPartLevelInfo;
-
-  // Last level
-  uint32_t numOpsLastRegWrite;
-  uint32_t numOpsLastMemWrite;
-  uint32_t numOpsLastPrint;
-  uint32_t numOpsLastStop;
-
-} SimPartitionPtrs;
+    auto regVal = regPool[regValId];
+    valuePool[resultId] = regVal;
+  }
+}
 
 
-__constant__ uint8_t lutContent[LUT_SIZE];
+__device__ void evalLastLevel(
+  uint8_t * __restrict valuePool,
+  const char * __restrict lastLevelNetlistPtr,
+  const size_t numRegWriteOps,
+  const size_t numMemWriteOps,
+  const size_t numPrintOps,
+  const size_t numStopOps) {
 
-__device__ uint8_t *regPool, *memPool, *exchangePool;
+  auto block = cg::this_thread_block();
+  auto thread_rank = block.thread_rank();
+  auto threads_in_block = block.size();
 
-__device__ bool shouldStop = false;
-__device__ bool enablePrint = false;
-__device__ uint32_t realCycles;
+  // Calculate netlist locations internally
+  auto netlist_regWrite = align_pointer(const_cast<char*>(lastLevelNetlistPtr));
+  auto netlist_memWrite = align_pointer(netlist_regWrite + (numRegWriteOps * sizeof(toucanGPUSim::CGRegWriteMetaInfo)));
+  auto netlist_print = align_pointer(netlist_memWrite + (numMemWriteOps * sizeof(toucanGPUSim::CGMemWriteMetaInfo)));
+  auto netlist_stop = align_pointer(netlist_print + (numPrintOps * sizeof(toucanGPUSim::CGPrintMetaInfo)));
 
-__device__ char **printMsgs;
-__device__ SimPartitionPtrs *partitions;
-__device__ uint32_t numParts;
+  const auto *regWriteOps = reinterpret_cast<const toucanGPUSim::CGRegWriteMetaInfo*>(netlist_regWrite);
+  const auto *memWriteOps = reinterpret_cast<const toucanGPUSim::CGMemWriteMetaInfo*>(netlist_memWrite);
+  const auto *printOps = reinterpret_cast<const toucanGPUSim::CGPrintMetaInfo*>(netlist_print);
+  const auto *stopOps = reinterpret_cast<const toucanGPUSim::CGStopMetaInfo*>(netlist_stop);
 
-uint8_t *regPool_device, *memPool_device;
+  assert(numRegWriteOps <= 1 && "Only support single reg write in last level");
+  if (numRegWriteOps != 0){
+    const auto &op = regWriteOps[0];
 
-std::vector<SimPartitionPtrs> gpuPartInfos;
+#ifdef REG_WRITE_USE_ASYNC_MEMCPY
+    size_t bytesToCopy = (op.count + 15) & 0xFFFFFFF0; // Fix: should be +15 for proper 16-byte alignment
+
+    cg::memcpy_async(block, regPool + op.reg, valuePool + op.dat, bytesToCopy); // Fix: correct src/dst order
+#else
+    size_t intsToCopy = (op.count + 3) / 4;
+    for (size_t i = thread_rank; i < intsToCopy; i += threads_in_block) {
+      size_t poolOffset = (op.dat >> 2) + i;
+      auto val = reinterpret_cast<uint32_t*>(valuePool)[poolOffset];
+
+      size_t regOffset = (op.reg >> 2) + i;
+      reinterpret_cast<uint32_t*>(regPool)[regOffset] = val;
+    }
+#endif
+  }
 
 
-extern __shared__ uint8_t sharedMem[];
+  for (size_t op_pos = thread_rank; op_pos < numMemWriteOps; op_pos += threads_in_block) {
+    const auto op = memWriteOps[op_pos];
+
+    // memwrite
+    auto enVal = valuePool[op.en];
+    if (enVal != 0) {
+      auto datVal = valuePool[op.dat];
+      auto addrVecId = op.addrVec;
+
+      uint32_t addr = 0;
+      for (size_t i = 0; i < 8; i++) {
+        auto addrFragmentVal = valuePool[addrVecId + i];
+        addr = addr | (addrFragmentVal << (i * 4));
+      }
+      // assert(addr <= op.memDepth && "Address exceed memory depth");
+      if (op.hasMultipleWriter) {
+        // assert(addr <= (UINT32_MAX >> 2));
+        addr <<= 2;
+      }
+      auto realIndex = op.memBase + addr;
+      memPool[realIndex] = datVal;
+    }
+  }
+
+
+  for (size_t op_pos = thread_rank; op_pos < numPrintOps; op_pos += threads_in_block) {
+    const auto op = printOps[op_pos];
+    auto enVal = valuePool[op.en];
+    if (enablePrint && enVal != 0) {
+      auto msgPtr = printMsgs[op.msg];
+      printf("%s", msgPtr);
+    }
+  }
+
+  for (size_t op_pos = thread_rank; op_pos < numStopOps; op_pos += threads_in_block) {
+    const auto op = stopOps[op_pos];
+
+    // stop
+    auto enVal = valuePool[op.en];
+    if (enVal != 0) {
+      shouldStop = true;
+    }
+  }
+
+#ifdef REG_WRITE_USE_ASYNC_MEMCPY
+  __threadfence();
+  cg::wait(block); // Wait for all copies to complete
+#endif
+
+}
+
+
+
+// Note: launch in 1D
+__device__ void evalEachPartition(size_t partId) {
+  auto &partPtrs = partitions[partId];
+
+  auto block = cg::this_thread_block();
+  auto thread_rank = block.thread_rank();
+  auto threads_in_block = block.size();
+
+  uint8_t *localValuePool = reinterpret_cast<uint8_t*>(sharedMem);
+  
+  // Copy constants from valuePool to shared memory
+  // Note: In new structure, constants are already in valuePool, so we copy the entire valuePool
+  for (size_t data_pos = thread_rank; data_pos < partPtrs.valuePoolSize; data_pos += threads_in_block) {
+    localValuePool[data_pos] = partPtrs.valuePool[data_pos];
+  }
+  __syncthreads();
+
+  auto netlist_ptr = partPtrs.netlist;
+  char* netlist_current_pos = netlist_ptr;
+
+  // 1. Evaluate L0 (register reads)
+  if (partPtrs.numOpsL0RegRead > 0) {
+    auto netlist_regRead = align_pointer(netlist_current_pos);
+    evalPartL0(localValuePool, 
+               reinterpret_cast<const toucanGPUSim::CGRegReadMetaInfo*>(netlist_regRead), 
+               partPtrs.numOpsL0RegRead);
+    netlist_current_pos = netlist_regRead + (partPtrs.numOpsL0RegRead * sizeof(toucanGPUSim::CGRegReadMetaInfo));
+    __syncthreads();
+  }
+
+  // 2. Evaluate execution levels using MicroParts
+  for (size_t exec_level_id = 0; exec_level_id < partPtrs.numExecLevels; exec_level_id++) {
+    const auto &levelInfo = partPtrs.execMPartLevelInfo[exec_level_id];
+    
+    // Each warp (32 threads) processes one MicroPart
+    uint32_t warp_id = thread_rank / 32;
+    uint32_t warps_per_block = (threads_in_block + 31) / 32;
+    
+    // Distribute MicroParts across warps with proper work distribution
+    // Each warp processes multiple MicroParts if there are more MicroParts than warps
+    for (uint32_t mpart_id = warp_id; mpart_id < levelInfo.numMParts; mpart_id += warps_per_block) {
+      const auto &mPartPtr = levelInfo.mPartInfo[mpart_id];
+      
+      // Calculate actual netlist pointer from base + offset
+      char *mPartNetlistPtr = partPtrs.netlist + mPartPtr.netlistOffset;
+      
+      // This warp processes this MicroPart
+      evalSingleMicroPart(localValuePool, partPtrs.constVecPool, mPartNetlistPtr);
+    }
+    __syncthreads();
+  }
+
+  // 3. Evaluate last level operations using direct pointer
+  evalLastLevel(
+    localValuePool, 
+    partPtrs.lastLevelNetlistPtr,
+    partPtrs.numOpsLastRegWrite, 
+    partPtrs.numOpsLastMemWrite, 
+    partPtrs.numOpsLastPrint, 
+    partPtrs.numOpsLastStop);
+}
+
+
+
+__device__ void evalEachRegion(
+  const uint32_t * __restrict partIdsInCurrentRegion,
+  const size_t numPartsInCurrentRegion
+) {
+  size_t block_rank = blockIdx.x;
+  size_t blocks_in_grid = gridDim.x;
+
+  for (size_t exec_pos = 0; exec_pos < numPartsInCurrentRegion; exec_pos += blocks_in_grid) {
+    size_t block_pos = exec_pos + block_rank;
+    if (block_pos < numPartsInCurrentRegion) {
+      auto partId = partIdsInCurrentRegion[block_pos];
+      evalEachPartition(partId);
+    }
+  }
+}
+
+__global__ void evalSingleCycle() {
+  // use cooperative group
+  auto grid = cg::this_grid();
+
+  for (size_t regionId = 0; regionId < numRegions; regionId++) {
+    uint32_t * partIdsInCurrentRegion = partsInRegion[regionId];
+    uint32_t numPartsInCurrentRegion = numPartsInRegion[regionId];
+    assert(numPartsInCurrentRegion != 0);
+    evalEachRegion(partIdsInCurrentRegion, numPartsInCurrentRegion);
+    __threadfence();
+    grid.sync();
+  }
+}
+
+__global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
+  auto grid = cg::this_grid();
+
+  for (size_t cycle = 0; cycle < cycleCnt; cycle++) {
+    for (size_t regionId = 0; regionId < numRegions; regionId++) {
+      uint32_t * partIdsInCurrentRegion = partsInRegion[regionId];
+      uint32_t numPartsInCurrentRegion = numPartsInRegion[regionId];
+      evalEachRegion(partIdsInCurrentRegion, numPartsInCurrentRegion);
+      __threadfence();
+      grid.sync();
+    }
+    if (shouldStop) {
+      auto thread_rank = grid.thread_rank();
+      if (thread_rank == 0) {
+        realCycles = cycle + 1;
+      }
+      return;
+    }
+  }
+
+  // update cycle counter
+  auto thread_rank = grid.thread_rank();
+  if (thread_rank == 0) {
+    realCycles = cycleCnt;
+  }
+}
+
+uint64_t read_reg_from_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalLocs) {
+  uint64_t result = 0;
+
+  for(auto it = signalLocs.begin(); it != signalLocs.end(); ++it) {
+    auto pos = std::get<0>(*it);
+    uint8_t valFragment;
+    gpuErrchk(cudaMemcpy(&valFragment, regPool_device + pos, 1, cudaMemcpyDeviceToHost));
+    assert(valFragment <= 0xF);
+    result = (result << 4) | valFragment;
+  }
+  return result;
+}
+
+
+void write_reg_to_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalLocs, uint64_t signalValue) {
+  for(auto rit = signalLocs.rbegin(); rit != signalLocs.rend(); ++rit) {
+    auto pos = std::get<0>(*rit);
+    uint8_t valFragment = signalValue & 0xF;
+    gpuErrchk(cudaMemcpyAsync(regPool_device + pos, &valFragment, 1, cudaMemcpyHostToDevice));
+    signalValue = signalValue >> 4;
+  }
+  gpuErrchk(cudaDeviceSynchronize());
+  assert(signalValue == 0 && "Given value is wider than register");
+}
+
+bool get_eval_done() {
+  bool ret = false;
+  cudaMemcpyFromSymbol(&ret, shouldStop, 1);
+  return ret;
+}
+
+uint32_t get_real_cycles() {
+  uint32_t ret;
+  cudaMemcpyFromSymbol(&ret, realCycles, sizeof(uint32_t));
+  return ret;
+}
+
+void setEnablePrint(bool print_en) {
+  cudaMemcpyToSymbol(enablePrint, &print_en, 1);
+}
 
 
 
@@ -527,7 +819,6 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
 
     // ops_l0
     partInfo.numOpsL0RegRead = eachPart.ops_l0_regRead.size();
-    assert((partInfo.numOpsL0RegRead == 0));
     if (partInfo.numOpsL0RegRead != 0) {
       size_t memSize = eachPart.ops_l0_regRead.size() * sizeof(toucanGPUSim::CGRegReadMetaInfo);
       appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_l0_regRead.data()), memSize);
@@ -592,6 +883,9 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     partInfo.numOpsLastPrint = eachPart.ops_last_print.size();
     partInfo.numOpsLastStop = eachPart.ops_last_stop.size();
 
+    // Record where last level operations start in the netlist
+    size_t lastLevelOffset = allNetlist.size();
+
     // Serialize single regWrite operation
     size_t memSize = sizeof(toucanGPUSim::CGRegWriteMetaInfo);
     appendToNetlistVec(reinterpret_cast<const char*>(&eachPart.op_last_regWrite), memSize);
@@ -612,6 +906,9 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     }
 
     allocAndCopyVector(&(partInfo.netlist), allNetlist.data(), allNetlist.size() * sizeof(char));
+
+    // Set the lastLevelNetlistPtr to point directly to last level operations
+    partInfo.lastLevelNetlistPtr = partInfo.netlist + lastLevelOffset;
 
     gpuPartInfos.push_back(partInfo);
   }
@@ -645,12 +942,12 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
   assert(numRegions_host != 0);
 
   uint32_t *numPartsInRegion_device;
-  allocAndCopyVector(&numPartsInRegion_device, numParts.data(), numRegions_host * sizeof(uint32_t*));
+  allocAndCopyVector(&numPartsInRegion_device, numParts.data(), numRegions_host * sizeof(uint32_t));
   cudaMemcpyToSymbol(numPartsInRegion, &numPartsInRegion_device, sizeof(uint32_t*));
-  cudaMemcpyToSymbol(numRegions, &numRegions_host, sizeof(uint32_t));
+  cudaMemcpyToSymbol(numRegions, &numRegions_host, sizeof(size_t));
 
   uint32_t **partsInRegion_device_ptrs;
-  allocAndCopyVector(&partsInRegion_device_ptrs, partsInRegion_device.data(), numRegions_host * sizeof(uint32_t**));
+  allocAndCopyVector(&partsInRegion_device_ptrs, partsInRegion_device.data(), numRegions_host * sizeof(uint32_t*));
   cudaMemcpyToSymbol(partsInRegion, &partsInRegion_device_ptrs, sizeof(uint32_t**));
 
   // copy print msgs
