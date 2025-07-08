@@ -64,18 +64,27 @@ int ToucanSimulator::setupGPU(int gpu_id) {
   }
 
   if (maxBlocksPerSMForSingleCycleKernel == 0) {
-    std::cerr << "Cannot find a proper thread block size to enable cooperative kernel. exit.\n";
+    std::cerr << "Cannot find a proper thread block size to enable cooperative kernel (Single cycle kernel). exit.\n";
     return 1;
   }
 
-  
-  gpuErrchk(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-    &maxBlocksPerSMForMultiCycleKernel, 
-    evalFreeRunningNCycles, 
-    maxThreadsPerBlock, 
-    0));
+  maxThreadsPerBlock = 512;
+
+  while (maxThreadsPerBlock > 64) {
+    gpuErrchk(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &maxBlocksPerSMForMultiCycleKernel, 
+        evalFreeRunningNCycles, 
+        maxThreadsPerBlock, 
+        0));
+    if (maxBlocksPerSMForMultiCycleKernel > 0) break;
+    maxThreadsPerBlock = maxThreadsPerBlock >> 1;
+  }
+
     
-  assert(maxBlocksPerSMForMultiCycleKernel != 0);
+  if (maxBlocksPerSMForMultiCycleKernel == 0) {
+    std::cerr << "Cannot find a proper thread block size to enable cooperative kernel (Multi cycle kernel). exit.\n";
+    return 1;
+  }
 
   // Print device information
   std::cout << "Device Name: " << prop.name << std::endl;
