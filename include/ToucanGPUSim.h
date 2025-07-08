@@ -12,7 +12,7 @@ namespace toucanGPUSim {
     SimDesignInfo design;
     SimDebugInfo symbols;
 
-    int init(const std::string designBinFilename, const std::string symbolBinFilename, bool shouldRandomize, bool enablePrint);
+    int init(const int gpu_id, const std::string designBinFilename, const std::string symbolBinFilename, bool shouldRandomize, bool enablePrint);
 
     void enableVCDDump(const std::string vcdFilename);
 

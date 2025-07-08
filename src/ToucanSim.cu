@@ -29,6 +29,8 @@ int ToucanSimulator::setupGPU(int gpu_id) {
     return 1;
   }
 
+  printf("Current GPU: %s\n", prop.name);
+
   // cuda capability >= 7.0
   if (prop.major < 7) {
     std::cerr << "Require CUDA capability >= 7.0\n";
@@ -89,7 +91,7 @@ int ToucanSimulator::setupGPU(int gpu_id) {
   return 0;
 }
 
-int ToucanSimulator::init(const std::string designBinFilename, const std::string symbolBinFilename, bool shouldRandomize, bool enablePrint) {
+int ToucanSimulator::init(const int gpu_id, const std::string designBinFilename, const std::string symbolBinFilename, bool shouldRandomize, bool enablePrint) {
   dumpVCD = false;
   vcdOfs = nullptr;
   cycle_cnt = 0;
@@ -123,7 +125,7 @@ int ToucanSimulator::init(const std::string designBinFilename, const std::string
     std::cout << "Randomize done" << std::endl;
   }
 
-  auto ret = setupGPU(0);
+  auto ret = setupGPU(gpu_id);
   assert(ret == 0);
 
   // Get thread block count
