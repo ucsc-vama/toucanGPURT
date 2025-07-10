@@ -367,10 +367,10 @@ __device__ void evalSingleMicroPart(
       auto vecReadOps = reinterpret_cast<const toucanGPUSim::CGMicroPartVecRead*>(dataPtr);
       const auto &op = vecReadOps[lane_id];
       
-      auto index0Val = static_cast<uint32_t>(valuePool[op.index0]);
-      auto index1Val = static_cast<uint32_t>(valuePool[op.index1]);
-      auto index2Val = static_cast<uint32_t>(valuePool[op.index2]);
-      auto index3Val = static_cast<uint32_t>(valuePool[op.index3]);
+      auto index0Val = static_cast<uint32_t>((op.index0 < 16) ? op.index0 : valuePool[op.index0]);
+      auto index1Val = static_cast<uint32_t>((op.index1 < 16) ? op.index1 : valuePool[op.index1]);
+      auto index2Val = static_cast<uint32_t>((op.index2 < 16) ? op.index2 : valuePool[op.index2]);
+      auto index3Val = static_cast<uint32_t>((op.index3 < 16) ? op.index3 : valuePool[op.index3]);
       
       
       
@@ -385,7 +385,7 @@ __device__ void evalSingleMicroPart(
           resultVal = valuePool[op.vecBase + vecOffset];
         }
       } else {
-        auto outRangeVal = valuePool[op.outRangeValue];
+        auto outRangeVal = (op.outRangeVal < 16) ? op.outRangeVal : valuePool[op.outRangeValue];
         resultVal = outRangeVal;
       }
       valuePool[op.result] = resultVal;
@@ -464,7 +464,7 @@ __device__ void evalSingleMicroPart(
       auto memReadOps = reinterpret_cast<const toucanGPUSim::CGMicroPartMemRead*>(dataPtr);
       const auto &op = memReadOps[lane_id];
       
-      auto enVal = valuePool[op.en];
+      auto enVal = (op.en < 16) ? op.en : valuePool[op.en];
       if (enVal != 0) {
         uint32_t addr = 0;
         for (size_t j = 0; j < 8; j++) {
@@ -557,7 +557,7 @@ __device__ void evalLastLevel(
     const auto op = memWriteOps[op_pos];
 
     // memwrite
-    auto enVal = valuePool[op.en];
+    auto enVal = (op.en < 16) ? op.en : valuePool[op.en];
     if (enVal != 0) {
       auto datVal = valuePool[op.dat];
       auto addrVecId = op.addrVec;
@@ -580,7 +580,7 @@ __device__ void evalLastLevel(
 
   for (size_t op_pos = thread_rank; op_pos < numPrintOps; op_pos += threads_in_block) {
     const auto op = printOps[op_pos];
-    auto enVal = valuePool[op.en];
+    auto enVal = (op.en < 16) ? op.en : valuePool[op.en];
     if (enablePrint && enVal != 0) {
       auto msgPtr = printMsgs[op.msg];
       printf("%s", msgPtr);
@@ -591,7 +591,7 @@ __device__ void evalLastLevel(
     const auto op = stopOps[op_pos];
 
     // stop
-    auto enVal = valuePool[op.en];
+    auto enVal = (op.en < 16) ? op.en : valuePool[op.en];
     if (enVal != 0) {
       shouldStop = true;
     }
