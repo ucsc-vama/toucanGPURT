@@ -385,7 +385,7 @@ __device__ void evalSingleMicroPart(
           resultVal = valuePool[op.vecBase + vecOffset];
         }
       } else {
-        auto outRangeVal = (op.outRangeVal < 16) ? op.outRangeVal : valuePool[op.outRangeValue];
+        auto outRangeVal = (op.outRangeValue < 16) ? op.outRangeValue : valuePool[op.outRangeValue];
         resultVal = outRangeVal;
       }
       valuePool[op.result] = resultVal;
