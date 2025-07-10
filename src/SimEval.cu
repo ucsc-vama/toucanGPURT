@@ -616,12 +616,14 @@ __device__ void evalEachPartition(size_t partId) {
 
   uint8_t *localValuePool = reinterpret_cast<uint8_t*>(sharedMem);
   
-  // Copy constants from valuePool to shared memory
-  // Note: In new structure, constants are already in valuePool, so we copy the entire valuePool
-  for (size_t data_pos = thread_rank; data_pos < partPtrs.valuePoolSize; data_pos += threads_in_block) {
-    localValuePool[data_pos] = partPtrs.valuePool[data_pos];
-  }
-  __syncthreads();
+  // Note: Not necessary. Temporal values are written first then read, initialize unneeded
+  // Note: However, save intermediate values may be needed if want to dump waveform.
+
+  // // Copy constants from valuePool to shared memory
+  // for (size_t data_pos = thread_rank; data_pos < partPtrs.valuePoolSize; data_pos += threads_in_block) {
+  //   localValuePool[data_pos] = partPtrs.valuePool[data_pos];
+  // }
+  // __syncthreads();
 
   auto netlist_ptr = partPtrs.netlist;
   char* netlist_current_pos = netlist_ptr;
@@ -711,20 +713,17 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
       __threadfence();
       grid.sync();
     }
+
+    // update cycle counter
+    auto thread_rank = grid.thread_rank();
+    if (thread_rank == 0) {
+      realCycles += 1;
+    }
     if (shouldStop) {
-      auto thread_rank = grid.thread_rank();
-      if (thread_rank == 0) {
-        realCycles = cycle + 1;
-      }
       return;
     }
   }
 
-  // update cycle counter
-  auto thread_rank = grid.thread_rank();
-  if (thread_rank == 0) {
-    realCycles = cycleCnt;
-  }
 }
 
 uint64_t read_reg_from_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalLocs) {
@@ -777,6 +776,9 @@ static void allocAndCopyVector(T **devicePtr, const void *data, const size_t siz
 }
 
 void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
+  // reset cycle count
+  uint32_t realCycles_host = 0;
+  cudaMemcpyToSymbol(realCycles, &realCycles_host, sizeof(uint32_t));
   // copy lut
   assert(design.lut.size() == LUT_SIZE);
   cudaMemcpyToSymbol(lutContent, design.lut.data(), design.lut.size() * sizeof(uint8_t));
