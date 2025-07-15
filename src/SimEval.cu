@@ -261,7 +261,7 @@ __device__ void evalSingleMicroPart(
       auto op1Val = (op1 < 16) ? op1 : valuePool[op1];
       auto op2Val = (op2 < 16) ? op2 : valuePool[op2];
       
-      uint8_t resultVal;
+      uint8_t resultVal = 0;
       if (lutIndex == LUT_NOP_INDEX) {
         resultVal = op2Val;
       } else {
@@ -316,7 +316,7 @@ __device__ void evalSingleMicroPart(
         op2Val = op2;
       }
 
-      uint8_t resultVal;
+      uint8_t resultVal = 0;
       if (lutIndex == LUT_NOP_INDEX) {
         resultVal = op2Val;
       } else {
@@ -376,7 +376,7 @@ __device__ void evalSingleMicroPart(
       
       uint32_t vecOffset = ((index0Val << 12) | (index1Val << 8) | (index2Val << 4) | index3Val) + op.offset;
       
-      uint8_t resultVal;
+      uint8_t resultVal = 0;
 
       if (vecOffset < op.vecLength) {
         if (op.isConstVec) {
