@@ -291,9 +291,9 @@ __device__ void evalSingleMicroPart(
       if (lane_id < currentLevelSize) {
         // Decode operands (0~15: const, 32~63: value from other threads)
         lutIndex = op.lutIndex();
-        auto op0 = op.op0();
-        auto op1 = op.op1();
-        auto op2 = op.op2();
+        op0 = op.op0();
+        op1 = op.op1();
+        op2 = op.op2();
       }
 
       // Every thread in the wrap should participate in shuffle
