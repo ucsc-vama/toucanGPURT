@@ -413,7 +413,8 @@ __device__ void evalSingleMicroPart(
       auto v1Base = op.vec1Base;
       auto v2Base = op.vec2Base;
 
-      __int128 v1Val, v2Val;
+      __int128 v1Val = 0;
+      __int128 v2Val = 0;
 
       for (int i = 0; i < vecLength; i++) {
         __int128 temp;
