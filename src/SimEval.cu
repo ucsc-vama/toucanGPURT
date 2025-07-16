@@ -208,7 +208,13 @@ extern __shared__ uint8_t sharedMem[];
 
 
 
-
+__device__ __forceinline__ __int128 sign_extend_128(__int128 value, uint16_t  sign_bit_pos) {
+  // Check if the sign bit is set
+  bool is_negative = (value >> sign_bit_pos) & 1;
+  if (!is_negative) return value;
+  __int128 mask = ((__int128)1 << (sign_bit_pos + 1)) - 1;
+  return value | ~mask;
+}
 
 
 
@@ -428,6 +434,9 @@ __device__ void evalSingleMicroPart(
         temp = v2_seg;
         v2Val = v2Val | (temp << (i * vecElemWidth));
       }
+
+      v1Val = sign_extend_128(v1Val, vecLength * vecElemWidth - 1);
+      v2Val = sign_extend_128(v2Val, vecLength * vecElemWidth - 1);
 
       const auto &opName = op.opName;
       bool resultIsVec = (opName == VEC_ARITH_ADD) || (opName == VEC_ARITH_SUB) || (opName == VEC_ARITH_MUL);
