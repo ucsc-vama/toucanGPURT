@@ -411,7 +411,7 @@ __device__ void evalSingleMicroPart(
       auto vecLength = op.vecLength;
       
       // Process vector operations
-      assert(vecLength * 4 < 128);
+      assert(vecLength * 4 <= 128);
 
       bool isV1Const = (op.isV1V2Const & 0b10) != 0;
       bool isV2Const = (op.isV1V2Const & 0b01) != 0;
