@@ -29,7 +29,7 @@ namespace cg = cooperative_groups;
 
 
 #define NETLIST_ALIGNMENT 16
-#define LUT_SIZE 4130
+#define LUT_SIZE 4386
 
 #define MICROPART_REGULAR_MAX_LEVELS 64
 #define MICROPART_REGULAR_MAGIC 0xfb709394
