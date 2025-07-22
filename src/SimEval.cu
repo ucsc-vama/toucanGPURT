@@ -589,9 +589,10 @@ __device__ void evalLastLevel(
 
 
   for (uint32_t op_pos = thread_rank; op_pos < numPrintOps; op_pos += threads_in_block) {
+    if (!enablePrint) continue;
     const auto op = printOps[op_pos];
     auto enVal = (op.en < 16) ? op.en : valuePool[op.en];
-    if (enablePrint && enVal != 0) {
+    if (enVal != 0) {
       auto msgPtr = printMsgs[op.msg];
       printf("%s", msgPtr);
     }
