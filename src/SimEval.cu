@@ -215,7 +215,76 @@ __device__ __forceinline__ __int128 sign_extend_128(__int128 value, uint16_t  si
   return value | ~mask;
 }
 
-
+/*
+__device__ __forceinline__ uint8_t dummyLUT(uint16_t lutIndex, uint8_t op0, uint8_t op1, uint8_t op2) {
+  switch (lutIndex) {
+    case 0: {  // Pos for op nop: 0
+      return op2;
+    }
+    case 546: {  // Pos for op and: 546
+      return op1 & op2;
+    }
+    case 802: {  // Pos for op or: 802
+      return op1 | op2;
+    }
+    case 1058: {  // Pos for op xor: 1058
+      return op1 ^ op2;
+    }
+    case 16: {  // Pos for op rep1b: 16
+      return (op2 == 0) ? 0 : 0xF;
+    }
+    case 34: {  // Pos for op add: 34
+      return (op1 + op2) & 0xF;
+    }
+    case 2082: {  // Pos for op mux: 2082
+      return (op0 == 1) ? op1 : op2;
+    }
+    case 2594: {  // Pos for op dshl: 2338
+      return (((op1 << 4) | op2) >> (4 - op0)) & 0xF;
+    }
+    case 3618: {  // Pos for op dshr: 3362
+      return (((op1 << 4) | op2) >> op0) & 0xF;
+    }
+    case 18: {  // Pos for op xorr: 18
+      return __popc(op2);
+    }
+    case 2850: {  // Pos for op shl1: 2594
+      return ((op1 << 1) | (op2 >> 3)) & 0xF;
+    }
+    case 3106: {  // Pos for op shl2: 2850
+      return ((op1 << 2) | (op2 >> 2)) & 0xF;
+    }
+    case 3362: {  // Pos for op shl3: 3106
+      return ((op1 << 3) | (op2 >> 1)) & 0xF;
+    }
+    case 1314: {  // Pos for op cmp_eq: 1314
+      return (op1 == op2);
+    }
+    case 290: {  // Pos for op sub: 290
+      return (op1 - op2) & 0xF;
+    }
+    case 1570: {  // Pos for op cmp_ult: 1570
+      return (op1 < op2);
+    }
+    case 1826: {  // Pos for op cmp_slt4b: 1826
+      int8_t op1s = op1;
+      int8_t op2s = op2;
+      if ((op1s & 0b1000) != 0) {
+        op1s |= 0xF0;
+      }
+      if ((op2s & 0b1000) != 0) {
+        op2s |= 0xF0;
+      }
+      return op1s < op2s;
+    }
+    default: {
+      printf("Unknown lut pos: %d\n", static_cast<int>(lutIndex));
+      assert(false);
+    }
+  }
+  return 0;
+}
+*/
 
 
 // Device function to evaluate a single MicroPart
@@ -272,6 +341,7 @@ __device__ void evalSingleMicroPart(
       } else {
         uint16_t lutPos = lutIndex+ ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
         resultVal = lutContent[lutPos];
+        // resultVal = dummyLUT(lutIndex, op0Val, op1Val, op2Val);
       }
 
       thisLaneShuffleVal = resultVal;
@@ -327,6 +397,7 @@ __device__ void evalSingleMicroPart(
       } else {
         uint16_t lutPos = lutIndex + ((static_cast<uint16_t>(op0Val) << 8) | (op1Val << 4) | op2Val);
         resultVal = lutContent[lutPos];
+        // resultVal = dummyLUT(lutIndex, op0Val, op1Val, op2Val);
       }
       
       // store for next shuffle
