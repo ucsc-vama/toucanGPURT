@@ -30,7 +30,7 @@ all: $(LIBRARY) $(TEST_RUN_BIN)
 $(LIBRARY): $(OBJECTS)
 	ar rcs $@ $(OBJECTS)
 
-$(TEST_RUN_BIN): $(LIBRARY)
+$(TEST_RUN_BIN): $(LIBRARY) $(OUT_DIR)/main.cpp
 	$(NVCC) $(OUT_DIR)/main.cpp -L$(OUT_DIR) -lToucanGPURT -I./include -o $(TEST_RUN_BIN)
 
 # Rule to make object files
@@ -43,6 +43,7 @@ $(SRC_DIR)/%.o: $(SRC_DIR)/%.cpp
 # Clean up
 clean:
 	rm -f $(SRC_DIR)/*.o $(LIBRARY)
+	rm $(TEST_RUN_BIN)
 
 # Phony targets
 .PHONY: all clean

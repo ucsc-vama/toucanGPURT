@@ -715,9 +715,9 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
     if (thread_rank == 0) {
       realCycles += 1;
     }
-    if (shouldStop) {
-      return;
-    }
+    // if (shouldStop) {
+    //   return;
+    // }
   }
 
 }
