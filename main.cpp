@@ -48,12 +48,7 @@ int main(int argc, char** argv) {
 
   std::cout << "Loading done" << std::endl;
 
-  const std::string name_reset = "TestHarness.reset";
-  const std::string name_io_success = "TestHarness.io_success";
 
-  // auto t = sim.readRegister(name_io_success);
-  // sim.setRegister(name_io_success, 1);
-  // sim.setRegister(name_reset, 1);
   auto start = std::chrono::system_clock::now();
 
   auto ss = sim.eval_free_running(static_cast<uint32_t>(sim_cycles));
