@@ -16,7 +16,7 @@
 #include <chrono>
 
 #include "ToucanGPUSim.h"
-#include "SimConfig.h"
+#include "SimConfigs.h"
 
 
 
