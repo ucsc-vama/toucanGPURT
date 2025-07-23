@@ -5,6 +5,7 @@
 #include <vector>
 #include "ToucanGPUGenDataTypes.h"
 #include "GPUConsts.h"
+#include "SimConfigs.h"
 
 namespace toucanGPUSim {
   class ToucanSimulator {
@@ -27,6 +28,10 @@ namespace toucanGPUSim {
     uint64_t readSignal(const std::string &signalName);
 
     void cleanup();
+
+    #ifdef ENABLE_SIM_PROFILE
+    void printProfile();
+    #endif
 
     ~ToucanSimulator() {
       cleanup();

@@ -284,3 +284,23 @@ uint64_t ToucanSimulator::readSignal(const std::string &signalName) {
 void ToucanSimulator::cleanup() {
   // TODO: release resources
 }
+
+#ifdef ENABLE_SIM_PROFILE
+void ToucanSimulator::printProfile() {
+  std::vector<int64_t> totalTicks, usefulTicks;
+
+  totalTicks.resize(maxNumPartsInEachRegion);
+  usefulTicks.resize(maxNumPartsInEachRegion);
+
+  copy_profile_data(usefulTicks.data(), totalTicks.data(), maxNumPartsInEachRegion);
+
+  for (int partId = 0; partId < maxNumPartsInEachRegion; partId++) {
+    auto time_on_work = usefulTicks[partId];
+    auto time_per_cycle = totalTicks[partId];
+
+    float useful_ratio = time_on_work * 100.0 / time_per_cycle;
+
+    std::cout << "Part " << partId << ", useful " << useful_ratio << "%, ticks " << time_on_work << ", total ticks " << time_per_cycle << "\n";
+  }
+}
+#endif

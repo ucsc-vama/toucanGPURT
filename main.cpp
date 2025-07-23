@@ -16,7 +16,7 @@
 #include <chrono>
 
 #include "ToucanGPUSim.h"
-
+#include "SimConfig.h"
 
 
 
@@ -59,6 +59,9 @@ int main(int argc, char** argv) {
   uint64_t time_ms = duration.count();
   std::cout << "Free running for " << sim_cycles << " cycles in " << time_ms << " ms\n";
 
+  #ifdef ENABLE_SIM_PROFILE
+  sim.printProfile();
+  #endif
 
   return 0;
 

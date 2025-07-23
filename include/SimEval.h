@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ToucanGPUGenDataTypes.h"
+#include "SimConfigs.h"
 
 // #include <cuda.h>
 #include <cuda_runtime_api.h>
@@ -32,3 +33,7 @@ bool get_eval_done();
 uint32_t get_real_cycles();
 
 void setEnablePrint(bool print_en);
+
+#ifdef ENABLE_SIM_PROFILE
+void copy_profile_data(int64_t *usefulTicks, int64_t *totalTicks, size_t count);
+#endif

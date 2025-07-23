@@ -7,6 +7,7 @@
 #include "ToucanGPUGenDataTypes.h"
 
 #include "SimEval.h"
+#include "SimConfigs.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -197,6 +198,13 @@ __device__ SimPartitionPtrs *partitions;
 
 __device__ uint32_t numTotalParts;
 
+
+#ifdef ENABLE_SIM_PROFILE
+__device__ int64_t *profile_ticks_useful;
+__device__ int64_t *profile_ticks_total;
+int64_t *profile_ticks_useful_device;
+int64_t *profile_ticks_total_device;
+#endif
 
 uint8_t *regPool_device, *memPool_device;
 
@@ -772,14 +780,44 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
     uint32_t block_rank = blockIdx.x;
     uint32_t blocks_in_grid = gridDim.x;
 
+    #ifdef ENABLE_SIM_PROFILE
+    int64_t start_clock = clock64();
+    #endif
     for (uint32_t block_pos = block_rank; block_pos < numTotalParts; block_pos += blocks_in_grid) {
       if (block_pos < numTotalParts) {
         evalEachPartition(block_pos);
       }
     }
 
+    #ifdef ENABLE_SIM_PROFILE
+    if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
+      if (cg::this_thread_block().thread_rank() == 0) {
+        int64_t end_clock = clock64();
+        int64_t useful_cycles = end_clock - start_clock;
+
+        uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
+
+        int64_t average_useful_cycle = ((profile_ticks_useful[block_rank] * profile_cycle) + useful_cycles) / (profile_cycle + 1);
+        profile_ticks_useful[block_rank] = average_useful_cycle;
+      }
+    }
+    #endif
+
     cooperative_groups::this_grid().sync();
-    
+
+    #ifdef ENABLE_SIM_PROFILE
+    if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
+      if (cg::this_thread_block().thread_rank() == 0) {
+        int64_t end_clock = clock64();
+        int64_t total_cycles = end_clock - start_clock;
+
+        uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
+
+        int64_t average_total_cycle = ((profile_ticks_total[block_rank] * profile_cycle) + total_cycles) / (profile_cycle + 1);
+        profile_ticks_total[block_rank] = average_total_cycle;
+      }
+    }
+    #endif
 
     // update cycle counter
     auto thread_rank = cooperative_groups::this_grid().thread_rank();
@@ -835,6 +873,13 @@ void setEnablePrint(bool print_en) {
 }
 
 
+#ifdef ENABLE_SIM_PROFILE
+void copy_profile_data(int64_t *usefulTicks, int64_t *totalTicks, size_t count) {
+  gpuErrchk(cudaMemcpy(usefulTicks, profile_ticks_useful_device, count * sizeof(int64_t), cudaMemcpyDeviceToHost));
+  gpuErrchk(cudaMemcpy(totalTicks, profile_ticks_total_device, count * sizeof(int64_t), cudaMemcpyDeviceToHost));
+}
+
+#endif
 
 template <typename T>
 static void allocAndCopyVector(T **devicePtr, const void *data, const size_t size) {
@@ -1024,6 +1069,15 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     allocAndCopyVector(&(printMsgs_device), printMsgs_device_ptrs.data(), memSize);
     cudaMemcpyToSymbol(printMsgs, &printMsgs_device, sizeof(char**));
   }
+
+#ifdef ENABLE_SIM_PROFILE
+  {
+    cudaMalloc(&profile_ticks_useful_device, sizeof(int64_t) * numParts[0]);
+    cudaMemcpyToSymbol(profile_ticks_useful, &profile_ticks_useful_device, sizeof(int64_t*));
+    cudaMalloc(&profile_ticks_total_device, sizeof(int64_t) * numParts[0]);
+    cudaMemcpyToSymbol(profile_ticks_total, &profile_ticks_total_device, sizeof(int64_t*));
+  }
+#endif
 
   gpuErrchk(cudaDeviceSynchronize());
 }
