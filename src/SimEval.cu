@@ -195,9 +195,8 @@ __device__ uint32_t realCycles;
 __device__ char **printMsgs;
 __device__ SimPartitionPtrs *partitions;
 
-__device__ uint32_t *numPartsInRegion;
-__device__ uint32_t numRegions;
-__device__ uint32_t **partsInRegion;
+__device__ uint32_t numTotalParts;
+
 
 uint8_t *regPool_device, *memPool_device;
 
@@ -683,50 +682,36 @@ __device__ void evalEachPartition(uint32_t partId) {
 
 
 
-__device__ void evalEachRegion(
-  const uint32_t * __restrict partIdsInCurrentRegion,
-  const uint32_t numPartsInCurrentRegion
-) {
+__global__ void evalSingleCycle() {
+
   uint32_t block_rank = blockIdx.x;
   uint32_t blocks_in_grid = gridDim.x;
 
-  for (uint32_t exec_pos = 0; exec_pos < numPartsInCurrentRegion; exec_pos += blocks_in_grid) {
-    uint32_t block_pos = exec_pos + block_rank;
-    if (block_pos < numPartsInCurrentRegion) {
-      auto partId = partIdsInCurrentRegion[block_pos];
-      evalEachPartition(partId);
+  for (uint32_t block_pos = block_rank; block_pos < numTotalParts; block_pos += blocks_in_grid) {
+    if (block_pos < numTotalParts) {
+      evalEachPartition(block_pos);
     }
   }
-}
 
-__global__ void evalSingleCycle() {
-  // use cooperative group
-  auto grid = cg::this_grid();
-
-  for (uint32_t regionId = 0; regionId < numRegions; regionId++) {
-    uint32_t * partIdsInCurrentRegion = partsInRegion[regionId];
-    uint32_t numPartsInCurrentRegion = numPartsInRegion[regionId];
-    assert(numPartsInCurrentRegion != 0);
-    evalEachRegion(partIdsInCurrentRegion, numPartsInCurrentRegion);
-    __threadfence();
-    grid.sync();
-  }
+  cooperative_groups::this_grid().sync();
 }
 
 __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
-  auto grid = cg::this_grid();
-
   for (uint32_t cycle = 0; cycle < cycleCnt; cycle++) {
-    for (uint32_t regionId = 0; regionId < numRegions; regionId++) {
-      uint32_t * partIdsInCurrentRegion = partsInRegion[regionId];
-      uint32_t numPartsInCurrentRegion = numPartsInRegion[regionId];
-      evalEachRegion(partIdsInCurrentRegion, numPartsInCurrentRegion);
-      __threadfence();
-      grid.sync();
+    uint32_t block_rank = blockIdx.x;
+    uint32_t blocks_in_grid = gridDim.x;
+
+    for (uint32_t block_pos = block_rank; block_pos < numTotalParts; block_pos += blocks_in_grid) {
+      if (block_pos < numTotalParts) {
+        evalEachPartition(block_pos);
+      }
     }
 
+    cooperative_groups::this_grid().sync();
+    
+
     // update cycle counter
-    auto thread_rank = grid.thread_rank();
+    auto thread_rank = cooperative_groups::this_grid().thread_rank();
     if (thread_rank == 0) {
       realCycles += 1;
     }
@@ -941,7 +926,6 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
 
   // setup numRegions and partsInRegion
   assert(design.regionPartitionIds.size() == 1 && "For now only supports 1 region");
-  std::vector<uint32_t*> partsInRegion_device;
   std::vector<uint32_t> numParts;
   size_t _partId = 0;
   for (const auto &eachRegionParts: design.regionPartitionIds) {
@@ -949,24 +933,11 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
       assert(partId == _partId);
       _partId++;
     }
-    uint32_t *ptr;
-    size_t memSize = eachRegionParts.size() * sizeof(uint32_t);
-    allocAndCopyVector(&ptr, eachRegionParts.data(), memSize);
-    partsInRegion_device.push_back(ptr);
     numParts.push_back(eachRegionParts.size());
   }
-  // Should have at least 1 region
-  uint32_t numRegions_host = numParts.size();
-  assert(numRegions_host != 0);
-
-  uint32_t *numPartsInRegion_device;
-  allocAndCopyVector(&numPartsInRegion_device, numParts.data(), numRegions_host * sizeof(uint32_t));
-  cudaMemcpyToSymbol(numPartsInRegion, &numPartsInRegion_device, sizeof(uint32_t*));
-  cudaMemcpyToSymbol(numRegions, &numRegions_host, sizeof(uint32_t));
-
-  uint32_t **partsInRegion_device_ptrs;
-  allocAndCopyVector(&partsInRegion_device_ptrs, partsInRegion_device.data(), numRegions_host * sizeof(uint32_t*));
-  cudaMemcpyToSymbol(partsInRegion, &partsInRegion_device_ptrs, sizeof(uint32_t**));
+  // Should have exact 1 region
+  assert(numParts.size() == 1);
+  cudaMemcpyToSymbol(numTotalParts, &numParts[0], sizeof(uint32_t));
 
   // copy print msgs
   std::vector<char*> printMsgs_device_ptrs;
