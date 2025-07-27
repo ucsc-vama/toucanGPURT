@@ -21,6 +21,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 __global__ void evalSingleCycle();
 
 __global__ void evalFreeRunningNCycles(uint32_t cycleCnt);
+__global__ void evalFreeRunningNCycles_Large(uint32_t cycleCnt);
 
 uint64_t read_reg_from_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalLocs);
 

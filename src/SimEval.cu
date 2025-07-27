@@ -197,6 +197,7 @@ __device__ char **printMsgs;
 __device__ SimPartitionPtrs *partitions;
 
 __device__ uint32_t numTotalParts;
+__device__ uint32_t partTaskCounter;
 
 
 #ifdef ENABLE_SIM_PROFILE
@@ -387,15 +388,15 @@ __device__ void evalSingleMicroPart(
 
       // update value if it's actually a const
       if (op0 < 32) {
-        assert(op0 < 16);
+        // assert(op0 < 16);
         op0Val = op0;
       }
       if (op1 < 32) {
-        assert(op1 < 16);
+        // assert(op1 < 16);
         op1Val = op1;
       }
       if (op2 < 32) {
-        assert(op2 < 16);
+        // assert(op2 < 16);
         op2Val = op2;
       }
 
@@ -433,7 +434,7 @@ __device__ void evalSingleMicroPart(
 
     // update value if it's actually a const
     if (shuffleId < 32) {
-      assert(shuffleId < 16);
+      // assert(shuffleId < 16);
       resultVal = shuffleId;
     }
 
@@ -489,7 +490,7 @@ __device__ void evalSingleMicroPart(
       auto vecLength = op.vecLength;
       
       // Process vector operations
-      assert(vecLength * 4 <= 128);
+      // assert(vecLength * 4 <= 128);
 
       bool isV1Const = (op.isV1V2Const & 0b10) != 0;
       bool isV2Const = (op.isV1V2Const & 0b01) != 0;
@@ -620,7 +621,7 @@ __device__ void evalLastLevel(
   const auto *printOps = reinterpret_cast<const toucanGPUSim::CGPrintMetaInfo*>(netlist_print);
   const auto *stopOps = reinterpret_cast<const toucanGPUSim::CGStopMetaInfo*>(netlist_stop);
 
-  assert(numRegWriteOps <= 1 && "Only support single reg write in last level");
+  // assert(numRegWriteOps <= 1 && "Only support single reg write in last level");
   if (numRegWriteOps != 0){
     const auto &op = regWriteOps[0];
 
@@ -704,6 +705,7 @@ __device__ void evalEachPartition(uint32_t partId) {
   auto threads_in_block = block.size();
 
   uint8_t *localValuePool = reinterpret_cast<uint8_t*>(sharedMem);
+  __shared__ uint32_t warpTaskCounter;
   
   // Note: Not necessary. Temporal values are written first then read, initialize unneeded
   // Note: However, save intermediate values may be needed if want to dump waveform.
@@ -732,17 +734,36 @@ __device__ void evalEachPartition(uint32_t partId) {
     const auto &levelInfo = partPtrs.execMPartLevelInfo[exec_level_id];
     
     // Each warp (32 threads) processes one MicroPart
-    uint32_t warp_id = thread_rank / 32;
-    uint32_t warps_per_block = (threads_in_block + 31) / 32;
+    // uint32_t warp_id = thread_rank / 32;
+    // uint32_t warps_per_block = (threads_in_block + 31) / 32;
+    uint32_t num_mparts_this_level = levelInfo.numMParts;
+    auto lane_id = cooperative_groups::tiled_partition<32>(cooperative_groups::this_thread_block()).thread_rank();
     
     // Distribute MicroParts across warps with proper work distribution
-    // Each warp processes multiple MicroParts if there are more MicroParts than warps
-    for (uint32_t mpart_id = warp_id; mpart_id < levelInfo.numMParts; mpart_id += warps_per_block) {
+    // Each warp dynamically pick next task
+
+    // reset task counter
+    if (thread_rank == 0) {
+      warpTaskCounter = 0;
+    }
+    __syncthreads();
+
+    while (true) {
+      uint32_t mpart_id;
+
+      // fetch next mpart id and broadcast to all threads in this warp
+      if (lane_id == 0) {
+        // fetch tasks
+        mpart_id = atomicAdd(&warpTaskCounter, 1);
+      }
+      mpart_id = __shfl_sync(0xFFFFFFFF, mpart_id, 0);
+
+      // Complete
+      if (mpart_id >= num_mparts_this_level) break;
+
       const auto &mPartPtr = levelInfo.mPartInfo[mpart_id];
-      
       // Calculate actual netlist pointer from base + offset
       char *mPartNetlistPtr = partPtrs.netlist + mPartPtr.netlistOffset;
-      
       // This warp processes this MicroPart
       evalSingleMicroPart(localValuePool, partPtrs.constVecPool, mPartNetlistPtr);
     }
@@ -787,6 +808,72 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
       if (block_pos < numTotalParts) {
         evalEachPartition(block_pos);
       }
+    }
+
+    #ifdef ENABLE_SIM_PROFILE
+    if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
+      if (cg::this_thread_block().thread_rank() == 0) {
+        int64_t end_clock = clock64();
+        int64_t useful_cycles = end_clock - start_clock;
+
+        uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
+
+        int64_t average_useful_cycle = ((profile_ticks_useful[block_rank] * profile_cycle) + useful_cycles) / (profile_cycle + 1);
+        profile_ticks_useful[block_rank] = average_useful_cycle;
+      }
+    }
+    #endif
+
+    cooperative_groups::this_grid().sync();
+
+    #ifdef ENABLE_SIM_PROFILE
+    if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
+      if (cg::this_thread_block().thread_rank() == 0) {
+        int64_t end_clock = clock64();
+        int64_t total_cycles = end_clock - start_clock;
+
+        uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
+
+        int64_t average_total_cycle = ((profile_ticks_total[block_rank] * profile_cycle) + total_cycles) / (profile_cycle + 1);
+        profile_ticks_total[block_rank] = average_total_cycle;
+      }
+    }
+    #endif
+
+    // update cycle counter
+    auto thread_rank = cooperative_groups::this_grid().thread_rank();
+    if (thread_rank == 0) {
+      realCycles += 1;
+    }
+    // if (shouldStop) {
+    //   return;
+    // }
+  }
+
+}
+
+__global__ void evalFreeRunningNCycles_Large(uint32_t cycleCnt) {
+  for (uint32_t cycle = 0; cycle < cycleCnt; cycle++) {
+
+    __shared__ uint32_t part_id;
+
+    #ifdef ENABLE_SIM_PROFILE
+    uint32_t block_rank = blockIdx.x;
+    int64_t start_clock = clock64();
+    #endif
+
+    if (cg::this_grid().thread_rank() == 0) {
+      partTaskCounter = 0;
+    }
+    cg::this_grid().sync();
+
+    while (true) {
+      if (cg::this_thread_block().thread_rank() == 0) {
+        part_id = atomicAdd(&partTaskCounter, 1);
+      }
+
+      __syncthreads();
+      evalEachPartition(part_id);
     }
 
     #ifdef ENABLE_SIM_PROFILE

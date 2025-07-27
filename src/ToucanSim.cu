@@ -232,14 +232,25 @@ bool ToucanSimulator::eval_free_running(uint32_t max_cycles) {
   size_t threadsPerBlock = maxThreadsPerBlock;
   void *kernelArgs[] = {&max_cycles};
 
-  gpuErrchk(cudaLaunchCooperativeKernel(
-    (void*)evalFreeRunningNCycles,
-    numBlocks,
-    threadsPerBlock,
-    kernelArgs,
-    sharedMemPerBlock
-  ));
-  
+  if (maxNumPartsInEachRegion > numBlocks) {
+    gpuErrchk(cudaLaunchCooperativeKernel(
+      (void*)evalFreeRunningNCycles_Large,
+      numBlocks,
+      threadsPerBlock,
+      kernelArgs,
+      sharedMemPerBlock
+    ));
+  } else {
+    gpuErrchk(cudaLaunchCooperativeKernel(
+      (void*)evalFreeRunningNCycles,
+      numBlocks,
+      threadsPerBlock,
+      kernelArgs,
+      sharedMemPerBlock
+    ));
+  }
+
+
   gpuErrchk(cudaDeviceSynchronize());
 
   auto ret = get_eval_done();
