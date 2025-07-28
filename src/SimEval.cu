@@ -869,42 +869,19 @@ __global__ void evalFreeRunningNCycles_Large(uint32_t cycleCnt) {
 
     while (true) {
       if (cg::this_thread_block().thread_rank() == 0) {
-        part_id = atomicAdd(&partTaskCounter, 1);
+        uint32_t part_id_local = atomicAdd(&partTaskCounter, 1);
+        part_id = part_id_local;
       }
 
       __syncthreads();
+
+      if (part_id >= numTotalParts) break;
+
       evalEachPartition(part_id);
     }
 
-    #ifdef ENABLE_SIM_PROFILE
-    if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
-      if (cg::this_thread_block().thread_rank() == 0) {
-        int64_t end_clock = clock64();
-        int64_t useful_cycles = end_clock - start_clock;
-
-        uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
-
-        int64_t average_useful_cycle = ((profile_ticks_useful[block_rank] * profile_cycle) + useful_cycles) / (profile_cycle + 1);
-        profile_ticks_useful[block_rank] = average_useful_cycle;
-      }
-    }
-    #endif
-
     cooperative_groups::this_grid().sync();
 
-    #ifdef ENABLE_SIM_PROFILE
-    if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
-      if (cg::this_thread_block().thread_rank() == 0) {
-        int64_t end_clock = clock64();
-        int64_t total_cycles = end_clock - start_clock;
-
-        uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
-
-        int64_t average_total_cycle = ((profile_ticks_total[block_rank] * profile_cycle) + total_cycles) / (profile_cycle + 1);
-        profile_ticks_total[block_rank] = average_total_cycle;
-      }
-    }
-    #endif
 
     // update cycle counter
     auto thread_rank = cooperative_groups::this_grid().thread_rank();

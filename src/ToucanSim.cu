@@ -68,8 +68,6 @@ int ToucanSimulator::setupGPU(int gpu_id) {
     return 1;
   }
 
-  maxThreadsPerBlock = 512;
-
   while (maxThreadsPerBlock > 64) {
     gpuErrchk(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
         &maxBlocksPerSMForMultiCycleKernel, 
@@ -79,6 +77,7 @@ int ToucanSimulator::setupGPU(int gpu_id) {
     if (maxBlocksPerSMForMultiCycleKernel > 0) break;
     maxThreadsPerBlock = maxThreadsPerBlock >> 1;
   }
+  maxBlocksPerSMForMultiCycleKernel = 1;
 
     
   if (maxBlocksPerSMForMultiCycleKernel == 0) {
@@ -134,18 +133,14 @@ int ToucanSimulator::init(const int gpu_id, const std::string designBinFilename,
     std::cout << "Randomize done" << std::endl;
   }
 
-  auto ret = setupGPU(gpu_id);
-  assert(ret == 0);
 
   // Get thread block count
   maxNumPartsInEachRegion = 0;
   for (const auto &eachRegionParts: design.regionPartitionIds) {
     maxNumPartsInEachRegion = std::max(maxNumPartsInEachRegion, static_cast<int>(eachRegionParts.size()));
   }
-  numBlocksForSingleCycleKernel = std::min(maxNumPartsInEachRegion, maxBlocksPerSMForSingleCycleKernel * numSMs);
-  numBlocksForMultiCycleKernel = std::min(maxNumPartsInEachRegion, maxBlocksPerSMForMultiCycleKernel * numSMs);
-  std::cout << "Single cycle kernel use " << numBlocksForSingleCycleKernel << " thread blocks.\n";
-  std::cout << "Multi cycle kernel use " << numBlocksForMultiCycleKernel << " thread blocks." << std::endl;
+
+  std::cout << "Design has " << maxNumPartsInEachRegion << " max parts\n";
 
   // Get max value pool size
   maxValuePoolSize = 0;
@@ -160,11 +155,6 @@ int ToucanSimulator::init(const int gpu_id, const std::string designBinFilename,
 
   size_t requiredSharedMem = maxValuePoolSize + (2 * (GPUMemPaddingSize));
   assert(requiredSharedMem < UINT16_MAX);
-  if (requiredSharedMem > maxSharedMemoryPerSM) {
-    std::cerr << "Error: This simulator requires at lease " << requiredSharedMem << "B shared memory, while GPU supports only " << maxSharedMemoryPerSM << "B\n";
-    return -1;
-  }
-
 
 
 
@@ -175,8 +165,10 @@ int ToucanSimulator::init(const int gpu_id, const std::string designBinFilename,
   cudaError_t statusKrnl1 = cudaFuncSetAttribute(evalSingleCycle, cudaFuncAttributeMaxDynamicSharedMemorySize, sharedMemPerBlock);
 
   cudaError_t statusKrnl2 = cudaFuncSetAttribute(evalFreeRunningNCycles, cudaFuncAttributeMaxDynamicSharedMemorySize, sharedMemPerBlock);
+
+  cudaError_t statusKrnl3 = cudaFuncSetAttribute(evalFreeRunningNCycles_Large, cudaFuncAttributeMaxDynamicSharedMemorySize, sharedMemPerBlock);
   
-  successAllocate = (statusKrnl1 == cudaSuccess) && (statusKrnl2 == cudaSuccess);
+  successAllocate = (statusKrnl1 == cudaSuccess) && (statusKrnl2 == cudaSuccess) && (statusKrnl3 == cudaSuccess);
 
 
   if (!successAllocate) {
@@ -187,7 +179,19 @@ int ToucanSimulator::init(const int gpu_id, const std::string designBinFilename,
   
 
 
+  auto ret = setupGPU(gpu_id);
+  assert(ret == 0);
 
+  numBlocksForSingleCycleKernel = std::min(maxNumPartsInEachRegion, maxBlocksPerSMForSingleCycleKernel * numSMs);
+  numBlocksForMultiCycleKernel = std::min(maxNumPartsInEachRegion, maxBlocksPerSMForMultiCycleKernel * numSMs);
+  std::cout << "Single cycle kernel use " << numBlocksForSingleCycleKernel << " thread blocks.\n";
+  std::cout << "Multi cycle kernel use " << numBlocksForMultiCycleKernel << " thread blocks." << std::endl;
+
+
+  if (requiredSharedMem > maxSharedMemoryPerSM) {
+    std::cerr << "Error: This simulator requires at lease " << requiredSharedMem << "B shared memory, while GPU supports only " << maxSharedMemoryPerSM << "B\n";
+    return -1;
+  }
 
   copy_netlist_to_gpu(design);
 
