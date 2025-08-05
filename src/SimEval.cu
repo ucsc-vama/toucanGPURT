@@ -328,7 +328,6 @@ __device__ void evalSingleMicroPart(
     
     // Process operations sequentially through levels
     char *currentPtr = dataPtr;
-    // TODO: if fail consider change this to int
     uint8_t thisLaneShuffleVal = 0;
     
     // 1. Process top level operations (each thread handles one operation)
@@ -374,10 +373,11 @@ __device__ void evalSingleMicroPart(
 
       if (lane_id < currentLevelSize) {
         // Decode operands (0~15: const, 32~63: value from other threads)
-        lutIndex = op.lutIndex();
-        op0 = op.op0();
-        op1 = op.op1();
-        op2 = op.op2();
+        uint32_t opRaw = op.getPacked();
+        op2 = opRaw & 0x3F;
+        op1 = (opRaw >> 6) & 0x3F;
+        op2 = (opRaw >> 12) & 0x3F;
+        lutIndex = opRaw >> 18;
       }
 
       // Every thread in the wrap should participate in shuffle
@@ -673,7 +673,7 @@ __device__ void evalLastLevel(
     auto enVal = (op.en < 16) ? op.en : valuePool[op.en];
     if (enVal != 0) {
       auto msgPtr = printMsgs[op.msg];
-      printf("%s", msgPtr);
+      printf(msgPtr);
     }
   }
 
