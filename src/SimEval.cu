@@ -1297,9 +1297,9 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
 
 #ifdef ENABLE_SIM_PROFILE
   {
-    cudaMalloc(&profile_ticks_useful_device, sizeof(int64_t) * numParts[0]);
+    cudaMalloc(&profile_ticks_useful_device, sizeof(int64_t) * totalParts);
     cudaMemcpyToSymbol(profile_ticks_useful, &profile_ticks_useful_device, sizeof(int64_t*));
-    cudaMalloc(&profile_ticks_total_device, sizeof(int64_t) * numParts[0]);
+    cudaMalloc(&profile_ticks_total_device, sizeof(int64_t) * totalParts);
     cudaMemcpyToSymbol(profile_ticks_total, &profile_ticks_total_device, sizeof(int64_t*));
   }
 #endif
