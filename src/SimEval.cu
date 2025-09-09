@@ -886,36 +886,42 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
     for (; partId < numParts_Region0; partId += blocks_in_grid) {
       if (partId < numParts_Region0) {
         evalEachPartition(partId);
+
+        #ifdef ENABLE_SIM_PROFILE
+        if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
+          if (cg::this_thread_block().thread_rank() == 0) {
+            int64_t end_clock = clock64();
+            int64_t useful_cycles = end_clock - start_clock;
+
+            uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
+
+            int64_t average_useful_cycle = ((profile_ticks_useful[partId] * profile_cycle) + useful_cycles) / (profile_cycle + 1);
+            profile_ticks_useful[partId] = average_useful_cycle;
+          }
+        }
+        #endif
       }
     }
-
-    #ifdef ENABLE_SIM_PROFILE
-    if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
-      if (cg::this_thread_block().thread_rank() == 0) {
-        int64_t end_clock = clock64();
-        int64_t useful_cycles = end_clock - start_clock;
-
-        uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
-
-        int64_t average_useful_cycle = ((profile_ticks_useful[partId] * profile_cycle) + useful_cycles) / (profile_cycle + 1);
-        profile_ticks_useful[partId] = average_useful_cycle;
-      }
-    }
-    #endif
 
 
     cooperative_groups::this_grid().sync();
 
     #ifdef ENABLE_SIM_PROFILE
-    if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
-      if (cg::this_thread_block().thread_rank() == 0) {
-        int64_t end_clock = clock64();
-        int64_t total_cycles = end_clock - start_clock;
 
-        uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
+    for (; partId < numParts_Region0; partId += blocks_in_grid) {
+      if (partId < numParts_Region0) {
 
-        int64_t average_total_cycle = ((profile_ticks_total[partId] * profile_cycle) + total_cycles) / (profile_cycle + 1);
-        profile_ticks_total[partId] = average_total_cycle;
+        if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
+          if (cg::this_thread_block().thread_rank() == 0) {
+            int64_t end_clock = clock64();
+            int64_t total_cycles = end_clock - start_clock;
+
+            uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
+
+            int64_t average_total_cycle = ((profile_ticks_total[partId] * profile_cycle) + total_cycles) / (profile_cycle + 1);
+            profile_ticks_total[partId] = average_total_cycle;
+          }
+        }
       }
     }
 
@@ -925,35 +931,39 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
     for (partId = block_rank + numParts_Region0; partId < numTotalParts; partId += blocks_in_grid) {
       if (partId < numTotalParts) {
         evalEachPartition(partId);
+
+        #ifdef ENABLE_SIM_PROFILE
+        if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
+          if (cg::this_thread_block().thread_rank() == 0) {
+            int64_t end_clock = clock64();
+            int64_t useful_cycles = end_clock - start_clock;
+
+            uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
+
+            int64_t average_useful_cycle = ((profile_ticks_useful[partId] * profile_cycle) + useful_cycles) / (profile_cycle + 1);
+            profile_ticks_useful[partId] = average_useful_cycle;
+          }
+        }
+        #endif
       }
     }
-
-    #ifdef ENABLE_SIM_PROFILE
-    if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
-      if (cg::this_thread_block().thread_rank() == 0) {
-        int64_t end_clock = clock64();
-        int64_t useful_cycles = end_clock - start_clock;
-
-        uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
-
-        int64_t average_useful_cycle = ((profile_ticks_useful[partId] * profile_cycle) + useful_cycles) / (profile_cycle + 1);
-        profile_ticks_useful[partId] = average_useful_cycle;
-      }
-    }
-    #endif
 
     cooperative_groups::this_grid().sync();
 
     #ifdef ENABLE_SIM_PROFILE
-    if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
-      if (cg::this_thread_block().thread_rank() == 0) {
-        int64_t end_clock = clock64();
-        int64_t total_cycles = end_clock - start_clock;
+    for (partId = block_rank + numParts_Region0; partId < numTotalParts; partId += blocks_in_grid) {
+      if (partId < numTotalParts) {
+        if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
+          if (cg::this_thread_block().thread_rank() == 0) {
+            int64_t end_clock = clock64();
+            int64_t total_cycles = end_clock - start_clock;
 
-        uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
+            uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
 
-        int64_t average_total_cycle = ((profile_ticks_total[partId] * profile_cycle) + total_cycles) / (profile_cycle + 1);
-        profile_ticks_total[partId] = average_total_cycle;
+            int64_t average_total_cycle = ((profile_ticks_total[partId] * profile_cycle) + total_cycles) / (profile_cycle + 1);
+            profile_ticks_total[partId] = average_total_cycle;
+          }
+        }
       }
     }
     #endif
@@ -1300,9 +1310,14 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
 
 #ifdef ENABLE_SIM_PROFILE
   {
+    std::vector<uint64_t> zeroTicks;
+    zeroTicks.resize(totalParts, 0);
+
     cudaMalloc(&profile_ticks_useful_device, sizeof(int64_t) * totalParts);
+    cudaMemcpy(profile_ticks_useful_device, zeroTicks.data(), sizeof(int64_t) * totalParts, cudaMemcpyHostToDevice);
     cudaMemcpyToSymbol(profile_ticks_useful, &profile_ticks_useful_device, sizeof(int64_t*));
     cudaMalloc(&profile_ticks_total_device, sizeof(int64_t) * totalParts);
+    cudaMemcpy(profile_ticks_total_device, zeroTicks.data(), sizeof(int64_t) * totalParts, cudaMemcpyHostToDevice);
     cudaMemcpyToSymbol(profile_ticks_total, &profile_ticks_total_device, sizeof(int64_t*));
   }
 #endif

@@ -304,12 +304,14 @@ void ToucanSimulator::cleanup() {
 void ToucanSimulator::printProfile() {
   std::vector<int64_t> totalTicks, usefulTicks;
 
-  totalTicks.resize(maxNumPartsInEachRegion);
-  usefulTicks.resize(maxNumPartsInEachRegion);
+  int numTotalPartitions = design.parts.size();
 
-  copy_profile_data(usefulTicks.data(), totalTicks.data(), maxNumPartsInEachRegion);
+  totalTicks.resize(numTotalPartitions);
+  usefulTicks.resize(numTotalPartitions);
 
-  for (int partId = 0; partId < maxNumPartsInEachRegion; partId++) {
+  copy_profile_data(usefulTicks.data(), totalTicks.data(), numTotalPartitions);
+
+  for (int partId = 0; partId < numTotalPartitions; partId++) {
     auto time_on_work = usefulTicks[partId];
     auto time_per_cycle = totalTicks[partId];
 
