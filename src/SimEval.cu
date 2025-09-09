@@ -1262,6 +1262,9 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
   }
 
   // setup numRegions and partsInRegion
+  if (design.regionPartitionIds.size() != 2) {
+    std::cout << "For now only supports 2 region, " << design.regionPartitionIds.size() << " region in design file\n";
+  }
   assert(design.regionPartitionIds.size() == 2 && "For now only supports 2 region");
   std::vector<uint32_t> numParts;
   size_t _partId = 0;
