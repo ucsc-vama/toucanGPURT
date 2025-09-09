@@ -908,7 +908,7 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
 
     #ifdef ENABLE_SIM_PROFILE
 
-    for (; partId < numParts_Region0; partId += blocks_in_grid) {
+    for (partId = block_rank; partId < numParts_Region0; partId += blocks_in_grid) {
       if (partId < numParts_Region0) {
 
         if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {

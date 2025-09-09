@@ -44,7 +44,7 @@ namespace toucanGPUSim {
     int maxBlocksPerSMForMultiCycleKernel;
     int maxThreadsPerBlock;
     int numSMs;
-    // int maxNumPartsInEachRegion;
+    int maxNumPartsInEachRegion;
 
     int numBlocksForSingleCycleKernel;
     int numBlocksForMultiCycleKernel;
