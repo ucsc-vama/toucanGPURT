@@ -788,7 +788,7 @@ __device__ void evalEachPartition(uint32_t partId) {
     evalPartL0ExgRead(localValuePool, 
                reinterpret_cast<const toucanGPUSim::CGExchangeReadMetaInfo*>(netlist_exgRead), 
                partPtrs.numOpsL0ExgRead);
-    netlist_current_pos = netlist_regRead + (partPtrs.numOpsL0ExgRead * sizeof(toucanGPUSim::CGExchangeReadMetaInfo));
+    netlist_current_pos = netlist_exgRead + (partPtrs.numOpsL0ExgRead * sizeof(toucanGPUSim::CGExchangeReadMetaInfo));
     __syncthreads();
   }
 
