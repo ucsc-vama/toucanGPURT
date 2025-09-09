@@ -171,12 +171,14 @@ typedef struct {
 
   // Top level
   uint32_t numOpsL0RegRead;
+  uint32_t numOpsL0ExgRead;
 
   // Exec level
   uint32_t numExecLevels;
   SimMPartLevelInfo *execMPartLevelInfo;
 
   // Last level
+  uint32_t numOpsLastExgWrite;
   uint32_t numOpsLastRegWrite;
   uint32_t numOpsLastMemWrite;
   uint32_t numOpsLastPrint;
@@ -187,7 +189,7 @@ typedef struct {
 
 __constant__ uint8_t lutContent[LUT_SIZE];
 
-__device__ uint8_t *regPool, *memPool;
+__device__ uint8_t *regPool, *memPool, *exchangePool;
 
 __device__ bool shouldStop = false;
 __device__ bool enablePrint = false;
@@ -197,6 +199,7 @@ __device__ char **printMsgs;
 __device__ SimPartitionPtrs *partitions;
 
 __device__ uint32_t numTotalParts;
+__device__ uint32_t numParts_Region0, numParts_Region1;
 __device__ uint32_t partTaskCounter;
 
 
@@ -207,7 +210,7 @@ int64_t *profile_ticks_useful_device;
 int64_t *profile_ticks_total_device;
 #endif
 
-uint8_t *regPool_device, *memPool_device;
+uint8_t *regPool_device, *memPool_device, *exchangePool_device;
 
 std::vector<SimPartitionPtrs> gpuPartInfos;
 
@@ -576,7 +579,7 @@ __device__ void evalSingleMicroPart(
   }
 }
 
-__device__ void evalPartL0(
+__device__ void evalPartL0RegRead(
   uint8_t * __restrict valuePool, 
   const toucanGPUSim::CGRegReadMetaInfo * __restrict topLevelRegReadOps,
   const uint32_t numRegReads) {
@@ -594,6 +597,27 @@ __device__ void evalPartL0(
 
     auto regVal = regPool[regValId];
     valuePool[resultId] = regVal;
+  }
+}
+
+__device__ void evalPartL0ExgRead(
+  uint8_t * __restrict valuePool, 
+  const toucanGPUSim::CGExchangeReadMetaInfo * __restrict topLevelExgReadOps,
+  const uint32_t numExgReads) {
+
+  auto block = cg::this_thread_block();
+  auto thread_rank = block.thread_rank();
+  auto threads_in_block = block.size();
+
+  // Eval exchange reads
+  for (uint32_t op_pos = thread_rank; op_pos < numExgReads; op_pos += threads_in_block) {
+    // reg read
+    const auto &op = topLevelExgReadOps[op_pos];
+    auto exgValId = op.exchange;
+    auto resultId = op.result;
+
+    auto exgVal = exchangePool[exgValId];
+    valuePool[resultId] = exgVal;
   }
 }
 
@@ -695,6 +719,37 @@ __device__ void evalLastLevel(
 }
 
 
+__device__ void evalLastLevelExgWrite(
+  uint8_t * __restrict valuePool,
+  const char * __restrict lastLevelNetlistPtr) {
+
+  auto block = cg::this_thread_block();
+  auto thread_rank = block.thread_rank();
+  auto threads_in_block = block.size();
+
+  // Calculate netlist locations internally
+  auto netlist_exgWrite = align_pointer(const_cast<char*>(lastLevelNetlistPtr));
+
+
+  const auto *exgWriteOps = reinterpret_cast<const toucanGPUSim::CGExchangeWriteMetaInfo*>(netlist_exgWrite);
+
+
+  // assert(numExgWriteOps == 1 && "Only support single reg write in last level");
+  {
+    const auto &op = exgWriteOps[0];
+
+    uint32_t intsToCopy = (op.count + 3) / 4;
+    for (uint32_t i = thread_rank; i < intsToCopy; i += threads_in_block) {
+      uint32_t poolOffset = (op.dat >> 2) + i;
+      auto val = reinterpret_cast<uint32_t*>(valuePool)[poolOffset];
+
+      uint32_t exgOffset = (op.exchange >> 2) + i;
+      reinterpret_cast<uint32_t*>(exchangePool)[exgOffset] = val;
+    }
+  }
+
+}
+
 
 // Note: launch in 1D
 __device__ void evalEachPartition(uint32_t partId) {
@@ -722,10 +777,18 @@ __device__ void evalEachPartition(uint32_t partId) {
   // 1. Evaluate L0 (register reads)
   if (partPtrs.numOpsL0RegRead > 0) {
     auto netlist_regRead = align_pointer(netlist_current_pos);
-    evalPartL0(localValuePool, 
+    evalPartL0RegRead(localValuePool, 
                reinterpret_cast<const toucanGPUSim::CGRegReadMetaInfo*>(netlist_regRead), 
                partPtrs.numOpsL0RegRead);
     netlist_current_pos = netlist_regRead + (partPtrs.numOpsL0RegRead * sizeof(toucanGPUSim::CGRegReadMetaInfo));
+    __syncthreads();
+  }
+  if (partPtrs.numOpsL0ExgRead > 0) {
+    auto netlist_exgRead = align_pointer(netlist_current_pos);
+    evalPartL0ExgRead(localValuePool, 
+               reinterpret_cast<const toucanGPUSim::CGExchangeReadMetaInfo*>(netlist_exgRead), 
+               partPtrs.numOpsL0ExgRead);
+    netlist_current_pos = netlist_regRead + (partPtrs.numOpsL0ExgRead * sizeof(toucanGPUSim::CGExchangeReadMetaInfo));
     __syncthreads();
   }
 
@@ -771,13 +834,19 @@ __device__ void evalEachPartition(uint32_t partId) {
   }
 
   // 3. Evaluate last level operations using direct pointer
-  evalLastLevel(
-    localValuePool, 
-    partPtrs.lastLevelNetlistPtr,
-    partPtrs.numOpsLastRegWrite, 
-    partPtrs.numOpsLastMemWrite, 
-    partPtrs.numOpsLastPrint, 
-    partPtrs.numOpsLastStop);
+  if (partPtrs.numOpsLastExgWrite != 0) {
+    // exchange write
+    evalLastLevelExgWrite(localValuePool, partPtrs.lastLevelNetlistPtr);
+  } else {
+    evalLastLevel(
+      localValuePool, 
+      partPtrs.lastLevelNetlistPtr,
+      partPtrs.numOpsLastRegWrite, 
+      partPtrs.numOpsLastMemWrite, 
+      partPtrs.numOpsLastPrint, 
+      partPtrs.numOpsLastStop);
+  }
+
 }
 
 
@@ -787,12 +856,19 @@ __global__ void evalSingleCycle() {
   uint32_t block_rank = blockIdx.x;
   uint32_t blocks_in_grid = gridDim.x;
 
-  for (uint32_t block_pos = block_rank; block_pos < numTotalParts; block_pos += blocks_in_grid) {
-    if (block_pos < numTotalParts) {
-      evalEachPartition(block_pos);
+  uint32_t partId = block_rank;
+  for (; partId < numParts_Region0; partId += blocks_in_grid) {
+    if (partId < numParts_Region0) {
+      evalEachPartition(partId);
     }
   }
+  cooperative_groups::this_grid().sync();
 
+  for (partId = block_rank + numParts_Region0; partId < numTotalParts; partId += blocks_in_grid) {
+    if (partId < numTotalParts) {
+      evalEachPartition(partId);
+    }
+  }
   cooperative_groups::this_grid().sync();
 }
 
@@ -804,9 +880,12 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
     #ifdef ENABLE_SIM_PROFILE
     int64_t start_clock = clock64();
     #endif
-    for (uint32_t block_pos = block_rank; block_pos < numTotalParts; block_pos += blocks_in_grid) {
-      if (block_pos < numTotalParts) {
-        evalEachPartition(block_pos);
+
+    uint32_t partId = block_rank;
+
+    for (; partId < numParts_Region0; partId += blocks_in_grid) {
+      if (partId < numParts_Region0) {
+        evalEachPartition(partId);
       }
     }
 
@@ -818,8 +897,47 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
 
         uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
 
-        int64_t average_useful_cycle = ((profile_ticks_useful[block_rank] * profile_cycle) + useful_cycles) / (profile_cycle + 1);
-        profile_ticks_useful[block_rank] = average_useful_cycle;
+        int64_t average_useful_cycle = ((profile_ticks_useful[partId] * profile_cycle) + useful_cycles) / (profile_cycle + 1);
+        profile_ticks_useful[partId] = average_useful_cycle;
+      }
+    }
+    #endif
+
+
+    cooperative_groups::this_grid().sync();
+
+    #ifdef ENABLE_SIM_PROFILE
+    if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
+      if (cg::this_thread_block().thread_rank() == 0) {
+        int64_t end_clock = clock64();
+        int64_t total_cycles = end_clock - start_clock;
+
+        uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
+
+        int64_t average_total_cycle = ((profile_ticks_total[partId] * profile_cycle) + total_cycles) / (profile_cycle + 1);
+        profile_ticks_total[partId] = average_total_cycle;
+      }
+    }
+
+    start_clock = clock64();
+    #endif
+
+    for (partId = block_rank + numParts_Region0; partId < numTotalParts; partId += blocks_in_grid) {
+      if (partId < numTotalParts) {
+        evalEachPartition(partId);
+      }
+    }
+
+    #ifdef ENABLE_SIM_PROFILE
+    if (cycle >= PROFILE_START_CYCLE && cycle < (PROFILE_START_CYCLE + PROFILE_COLLECT_CYCLE)) {
+      if (cg::this_thread_block().thread_rank() == 0) {
+        int64_t end_clock = clock64();
+        int64_t useful_cycles = end_clock - start_clock;
+
+        uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
+
+        int64_t average_useful_cycle = ((profile_ticks_useful[partId] * profile_cycle) + useful_cycles) / (profile_cycle + 1);
+        profile_ticks_useful[partId] = average_useful_cycle;
       }
     }
     #endif
@@ -834,8 +952,8 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
 
         uint32_t profile_cycle = cycle - PROFILE_START_CYCLE;
 
-        int64_t average_total_cycle = ((profile_ticks_total[block_rank] * profile_cycle) + total_cycles) / (profile_cycle + 1);
-        profile_ticks_total[block_rank] = average_total_cycle;
+        int64_t average_total_cycle = ((profile_ticks_total[partId] * profile_cycle) + total_cycles) / (profile_cycle + 1);
+        profile_ticks_total[partId] = average_total_cycle;
       }
     }
     #endif
@@ -852,18 +970,39 @@ __global__ void evalFreeRunningNCycles(uint32_t cycleCnt) {
 
 }
 
+// Each thread block find next job using atomic
 __global__ void evalFreeRunningNCycles_Large(uint32_t cycleCnt) {
   for (uint32_t cycle = 0; cycle < cycleCnt; cycle++) {
 
     __shared__ uint32_t part_id;
 
-    #ifdef ENABLE_SIM_PROFILE
-    uint32_t block_rank = blockIdx.x;
-    int64_t start_clock = clock64();
-    #endif
+    // #ifdef ENABLE_SIM_PROFILE
+    // uint32_t block_rank = blockIdx.x;
+    // int64_t start_clock = clock64();
+    // #endif
 
     if (cg::this_grid().thread_rank() == 0) {
       partTaskCounter = 0;
+    }
+    cg::this_grid().sync();
+
+    while (true) {
+      if (cg::this_thread_block().thread_rank() == 0) {
+        uint32_t part_id_local = atomicAdd(&partTaskCounter, 1);
+        part_id = part_id_local;
+      }
+
+      __syncthreads();
+
+      if (part_id >= numParts_Region0) break;
+
+      evalEachPartition(part_id);
+    }
+
+    cooperative_groups::this_grid().sync();
+
+    if (cg::this_grid().thread_rank() == 0) {
+      partTaskCounter = numParts_Region0;
     }
     cg::this_grid().sync();
 
@@ -879,9 +1018,6 @@ __global__ void evalFreeRunningNCycles_Large(uint32_t cycleCnt) {
 
       evalEachPartition(part_id);
     }
-
-    cooperative_groups::this_grid().sync();
-
 
     // update cycle counter
     auto thread_rank = cooperative_groups::this_grid().thread_rank();
@@ -970,6 +1106,11 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
   cudaMemcpyToSymbol(regPool, &regPool_device, sizeof(uint8_t*));
   cudaMemcpyToSymbol(memPool, &memPool_device, sizeof(uint8_t*));
 
+  std::vector<uint8_t> exgPool_local;
+  exgPool_local.resize(design.exchangePoolSize, 0);
+  allocAndCopyVector(&exchangePool_device, exgPool_local.data(), design.exchangePoolSize);
+  cudaMemcpyToSymbol(exchangePool, &exchangePool_device, sizeof(uint8_t*));
+
 
   // copy each partitions
   for (auto &eachPart: design.parts) {
@@ -1006,6 +1147,13 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
       size_t memSize = eachPart.ops_l0_regRead.size() * sizeof(toucanGPUSim::CGRegReadMetaInfo);
       appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_l0_regRead.data()), memSize);
     }
+    // exg read
+    partInfo.numOpsL0ExgRead = eachPart.ops_l0_exchangeRead.size();
+    if (partInfo.numOpsL0ExgRead != 0) {
+      size_t memSize = eachPart.ops_l0_exchangeRead.size() * sizeof(toucanGPUSim::CGExchangeReadMetaInfo);
+      appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_l0_exchangeRead.data()), memSize);
+    }
+    assert((partInfo.numOpsL0ExgRead == 0) != (partInfo.numOpsL0RegRead));
 
 
     // middle level mparts - serialize MicroParts
@@ -1061,7 +1209,8 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     }
 
     // last level - handle single regWrite and multiple other operations
-    partInfo.numOpsLastRegWrite = 1; // Always 1 for op_last_regWrite
+    partInfo.numOpsLastRegWrite = eachPart.op_last_regWrite.count != 0;
+    partInfo.numOpsLastExgWrite = eachPart.op_last_exchangeWrite.count != 0;
     partInfo.numOpsLastMemWrite = eachPart.ops_last_memWrite.size();
     partInfo.numOpsLastPrint = eachPart.ops_last_print.size();
     partInfo.numOpsLastStop = eachPart.ops_last_stop.size();
@@ -1070,8 +1219,16 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     size_t lastLevelOffset = allNetlist.size();
 
     // Serialize single regWrite operation
-    size_t memSize = sizeof(toucanGPUSim::CGRegWriteMetaInfo);
-    appendToNetlistVec(reinterpret_cast<const char*>(&eachPart.op_last_regWrite), memSize);
+    if (partInfo.numOpsLastRegWrite != 0) {
+      size_t memSize = sizeof(toucanGPUSim::CGRegWriteMetaInfo);
+      appendToNetlistVec(reinterpret_cast<const char*>(&eachPart.op_last_regWrite), memSize);
+    }
+
+    if (partInfo.numOpsLastExgWrite != 0) {
+      size_t memSize = sizeof(toucanGPUSim::CGExchangeWriteMetaInfo);
+      appendToNetlistVec(reinterpret_cast<const char*>(&eachPart.op_last_exchangeWrite), memSize);
+    }
+
 
     if (partInfo.numOpsLastMemWrite != 0) {
       size_t memSize = eachPart.ops_last_memWrite.size() * sizeof(toucanGPUSim::CGMemWriteMetaInfo);
@@ -1105,7 +1262,7 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
   }
 
   // setup numRegions and partsInRegion
-  assert(design.regionPartitionIds.size() == 1 && "For now only supports 1 region");
+  assert(design.regionPartitionIds.size() == 2 && "For now only supports 2 region");
   std::vector<uint32_t> numParts;
   size_t _partId = 0;
   for (const auto &eachRegionParts: design.regionPartitionIds) {
@@ -1116,8 +1273,12 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
     numParts.push_back(eachRegionParts.size());
   }
   // Should have exact 1 region
-  assert(numParts.size() == 1);
-  cudaMemcpyToSymbol(numTotalParts, &numParts[0], sizeof(uint32_t));
+  assert(numParts.size() == 2);
+  cudaMemcpyToSymbol(numParts_Region0, &numParts[0], sizeof(uint32_t));
+  cudaMemcpyToSymbol(numParts_Region1, &numParts[1], sizeof(uint32_t));
+  uint32_t totalParts = design.parts.size();
+  assert(totalParts = numParts[0] + numParts[1]);
+  cudaMemcpyToSymbol(numTotalParts, &totalParts, sizeof(uint32_t));
 
   // copy print msgs
   std::vector<char*> printMsgs_device_ptrs;
