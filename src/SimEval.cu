@@ -1153,7 +1153,7 @@ void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
       size_t memSize = eachPart.ops_l0_exchangeRead.size() * sizeof(toucanGPUSim::CGExchangeReadMetaInfo);
       appendToNetlistVec(reinterpret_cast<const char*>(eachPart.ops_l0_exchangeRead.data()), memSize);
     }
-    assert((partInfo.numOpsL0ExgRead == 0) != (partInfo.numOpsL0RegRead));
+    assert((partInfo.numOpsL0ExgRead == 0) != (partInfo.numOpsL0RegRead == 0));
 
 
     // middle level mparts - serialize MicroParts
