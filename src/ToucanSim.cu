@@ -136,8 +136,11 @@ int ToucanSimulator::init(const int gpu_id, const std::string designBinFilename,
 
   // Get thread block count
   maxNumPartsInEachRegion = 0;
+  int regionId = 0;
   for (const auto &eachRegionParts: design.regionPartitionIds) {
     maxNumPartsInEachRegion = std::max(maxNumPartsInEachRegion, static_cast<int>(eachRegionParts.size()));
+    std::cout << "Region " << regionId << " has " << eachRegionParts.size() << " partitions\n";
+    regionId++;
   }
 
   std::cout << "Design has " << maxNumPartsInEachRegion << " max parts\n";
