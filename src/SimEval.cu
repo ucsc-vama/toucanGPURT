@@ -379,7 +379,7 @@ __device__ void evalSingleMicroPart(
         uint32_t opRaw = op.getPacked();
         op2 = opRaw & 0x3F;
         op1 = (opRaw >> 6) & 0x3F;
-        op2 = (opRaw >> 12) & 0x3F;
+        op0 = (opRaw >> 12) & 0x3F;
         lutIndex = opRaw >> 18;
       }
 
