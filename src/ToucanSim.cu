@@ -156,7 +156,7 @@ int ToucanSimulator::init(const int gpu_id, const std::string designBinFilename,
 
   // setup shared mem
 
-  size_t requiredSharedMem = maxValuePoolSize + (2 * (GPUMemPaddingSize));
+  size_t requiredSharedMem = maxValuePoolSize;
   assert(requiredSharedMem < UINT16_MAX);
 
 
@@ -187,6 +187,8 @@ int ToucanSimulator::init(const int gpu_id, const std::string designBinFilename,
 
   numBlocksForSingleCycleKernel = std::min(maxNumPartsInEachRegion, maxBlocksPerSMForSingleCycleKernel * numSMs);
   numBlocksForMultiCycleKernel = std::min(maxNumPartsInEachRegion, maxBlocksPerSMForMultiCycleKernel * numSMs);
+  numBlocksForMultiCycleKernel = 1;
+  numBlocksForSingleCycleKernel = 1;
   std::cout << "Single cycle kernel use " << numBlocksForSingleCycleKernel << " thread blocks.\n";
   std::cout << "Multi cycle kernel use " << numBlocksForMultiCycleKernel << " thread blocks." << std::endl;
 
