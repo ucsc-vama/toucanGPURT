@@ -336,7 +336,7 @@ __device__ void evalSingleMicroPart(
     // 1. Process top level operations (each thread handles one operation)
     uint8_t currentLevelSize = levelSizes[0];
     if (lane_id < currentLevelSize) {
-      auto topOps = reinterpret_cast<const toucanGPUSim::CGMicroPartLUTTopLevelOp*>(currentPtr);
+      auto topOps = reinterpret_cast<const toucanGPUSim::CGMicroPartLUTTopLevelOp*>(__builtin_assume_aligned(currentPtr, 4));
       const auto &op = topOps[lane_id];
       auto lutIndex = op.lutIndex;
       auto op0 = op.op0;
@@ -365,7 +365,7 @@ __device__ void evalSingleMicroPart(
     for (uint32_t level = 0; level < numMiddleLevels; level++) {
       currentLevelSize = levelSizes[1 + level];
 
-      auto middleOps = reinterpret_cast<const toucanGPUSim::CGMicroPartLUTMiddleLevelOp*>(currentPtr);
+      auto middleOps = reinterpret_cast<const toucanGPUSim::CGMicroPartLUTMiddleLevelOp*>(__builtin_assume_aligned(currentPtr, 4));
       const auto &op = middleOps[lane_id];
 
       // Default value. Can be changed to any lane
@@ -422,7 +422,7 @@ __device__ void evalSingleMicroPart(
     // 3. Process last level operations (write back)
     currentLevelSize = levelSizes[1 + numMiddleLevels];
 
-    auto lastOps = reinterpret_cast<const toucanGPUSim::CGMicroPartLUTLastLevelWriteBack*>(currentPtr);
+    auto lastOps = reinterpret_cast<const toucanGPUSim::CGMicroPartLUTLastLevelWriteBack*>(__builtin_assume_aligned(currentPtr, 4));
     const auto &op = lastOps[lane_id];
 
     uint8_t shuffleId = 0;
