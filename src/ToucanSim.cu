@@ -187,8 +187,6 @@ int ToucanSimulator::init(const int gpu_id, const std::string designBinFilename,
 
   numBlocksForSingleCycleKernel = std::min(maxNumPartsInEachRegion, maxBlocksPerSMForSingleCycleKernel * numSMs);
   numBlocksForMultiCycleKernel = std::min(maxNumPartsInEachRegion, maxBlocksPerSMForMultiCycleKernel * numSMs);
-  numBlocksForMultiCycleKernel = 1;
-  numBlocksForSingleCycleKernel = 1;
   std::cout << "Single cycle kernel use " << numBlocksForSingleCycleKernel << " thread blocks.\n";
   std::cout << "Multi cycle kernel use " << numBlocksForMultiCycleKernel << " thread blocks." << std::endl;
 
