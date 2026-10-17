@@ -191,7 +191,7 @@ __constant__ uint8_t lutContent[LUT_SIZE];
 
 __device__ uint8_t *regPool, *memPool, *exchangePool;
 
-__device__ bool shouldStop = false;
+__device__ unsigned int shouldStop = 0;
 __device__ bool enablePrint = false;
 __device__ uint32_t realCycles;
 
@@ -628,7 +628,8 @@ __device__ void evalLastLevel(
   const uint32_t numRegWriteOps,
   const uint32_t numMemWriteOps,
   const uint32_t numPrintOps,
-  const uint32_t numStopOps) {
+  const uint32_t numStopOps,
+  const uint32_t partId) {
 
   auto block = cg::this_thread_block();
   auto thread_rank = block.thread_rank();
@@ -672,7 +673,8 @@ __device__ void evalLastLevel(
     // memwrite
     auto enVal = (op.en < 16) ? op.en : valuePool[op.en];
     if (enVal != 0) {
-      auto datVal = valuePool[op.dat];
+      // Slots 0..15 encode immediate nibbles, not shared-memory locations.
+      auto datVal = (op.dat < 16) ? op.dat : valuePool[op.dat];
       auto addrVecId = op.addrVec;
 
       uint32_t addr = 0;
@@ -697,7 +699,7 @@ __device__ void evalLastLevel(
     auto enVal = (op.en < 16) ? op.en : valuePool[op.en];
     if (enVal != 0) {
       auto msgPtr = printMsgs[op.msg];
-      printf(msgPtr);
+      printf("%s", msgPtr);
     }
   }
 
@@ -707,7 +709,15 @@ __device__ void evalLastLevel(
     // stop
     auto enVal = (op.en < 16) ? op.en : valuePool[op.en];
     if (enVal != 0) {
-      shouldStop = true;
+      if (atomicExch(&shouldStop, 1u) == 0) {
+        printf("Toucan first stop: partition=%u op=%u enable_slot=%u value=%u\n",
+               partId, op_pos, static_cast<unsigned>(op.en), static_cast<unsigned>(enVal));
+        // Preserve assertion text without interpreting unsupported substitutions.
+        for (uint32_t i = 0; i < numPrintOps; ++i) {
+          if (printOps[i].en == op.en)
+            printf("Stop-associated message (literal): %s\n", printMsgs[printOps[i].msg]);
+        }
+      }
     }
   }
 
@@ -844,9 +854,13 @@ __device__ void evalEachPartition(uint32_t partId) {
       partPtrs.numOpsLastRegWrite, 
       partPtrs.numOpsLastMemWrite, 
       partPtrs.numOpsLastPrint, 
-      partPtrs.numOpsLastStop);
+      partPtrs.numOpsLastStop,
+      partId);
   }
 
+  // Another partition may reuse this block's shared pool immediately. All
+  // last-level readers (including stop checks) must finish before that happens.
+  __syncthreads();
 }
 
 
@@ -1059,7 +1073,7 @@ void write_reg_to_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalL
   for(auto rit = signalLocs.rbegin(); rit != signalLocs.rend(); ++rit) {
     auto pos = std::get<0>(*rit);
     uint8_t valFragment = signalValue & 0xF;
-    gpuErrchk(cudaMemcpyAsync(regPool_device + pos, &valFragment, 1, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpy(regPool_device + pos, &valFragment, 1, cudaMemcpyHostToDevice));
     signalValue = signalValue >> 4;
   }
   gpuErrchk(cudaDeviceSynchronize());
@@ -1067,9 +1081,9 @@ void write_reg_to_gpu(const std::vector<std::tuple<uint32_t, uint32_t>>& signalL
 }
 
 bool get_eval_done() {
-  bool ret = false;
-  cudaMemcpyFromSymbol(&ret, shouldStop, 1);
-  return ret;
+  unsigned int ret = 0;
+  gpuErrchk(cudaMemcpyFromSymbol(&ret, shouldStop, sizeof(ret)));
+  return ret != 0;
 }
 
 uint32_t get_real_cycles() {
@@ -1098,6 +1112,9 @@ static void allocAndCopyVector(T **devicePtr, const void *data, const size_t siz
 }
 
 void copy_netlist_to_gpu(toucanGPUSim::SimDesignInfo &design) {
+  // Reset device status for each newly loaded simulation.
+  unsigned int stop_host = 0;
+  gpuErrchk(cudaMemcpyToSymbol(shouldStop, &stop_host, sizeof(stop_host)));
   // reset cycle count
   uint32_t realCycles_host = 0;
   cudaMemcpyToSymbol(realCycles, &realCycles_host, sizeof(uint32_t));
